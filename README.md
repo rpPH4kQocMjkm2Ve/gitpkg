@@ -86,7 +86,7 @@ install:
 ## Usage
 
 ```
-gitpkg install <name>...
+gitpkg install [--needed] <name>...
 gitpkg update [name]
 gitpkg remove <name>
 gitpkg list
@@ -142,6 +142,7 @@ User-added sources are stored in `/etc/gitpkg/repos.conf`.
 | `-y, --yes` | remove | Skip confirmation |
 | `--skip-inspect` | install, update | Skip Makefile review and confirmation |
 | `--fix` | verify | Auto-repair permissions |
+| `--needed` | install | Do not reinstall up to date packages |
 
 ## License
 
