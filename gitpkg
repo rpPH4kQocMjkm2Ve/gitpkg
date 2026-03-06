@@ -738,12 +738,17 @@ _install_single() {
     fi
 
     if _stage_and_deploy "$name" "$dry_run"; then
-        if [[ -n "$CLONE_SUCCESS_URL" ]]; then
+        local _origin_url="${CLONE_SUCCESS_URL}"
+        if [[ -z "$_origin_url" ]]; then
+            _origin_url=$(git -C "$srcdir" remote get-url origin 2>/dev/null || true)
+        fi
+
+        if [[ -n "$_origin_url" ]]; then
             {
-                echo "$CLONE_SUCCESS_URL"
+                echo "$_origin_url"
                 local u
                 for u in "${clone_urls[@]}"; do
-                    [[ "$u" != "$CLONE_SUCCESS_URL" ]] && echo "$u"
+                    [[ "$u" != "$_origin_url" ]] && echo "$u"
                 done
             } > "${dbdir}/urls"
         fi
