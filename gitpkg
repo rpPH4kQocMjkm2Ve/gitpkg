@@ -80,6 +80,7 @@ Options:
     -y, --yes        Skip confirmation (remove)
     --fix            Auto-repair permission anomalies (verify)
     --skip-inspect   Skip Makefile review (install)
+    --needed         Do not reinstall up to date packages
     -h, --help       Show this help
     -V, --version    Show version
 
@@ -655,8 +656,9 @@ cmd_inspect() {
 cmd_install() {
     local dry_run="$1"; shift
     local skip_inspect="$1"; shift
+    local needed="$1"; shift
 
-    [[ $# -gt 0 ]] || die "usage: gitpkg install <name>... [--skip-inspect] [-n]"
+    [[ $# -gt 0 ]] || die "usage: gitpkg install <name>... [--needed] [--skip-inspect] [-n]"
     [[ $EUID -eq 0 ]] || die "must run as root"
 
     _check_deps
@@ -664,7 +666,7 @@ cmd_install() {
 
     local name
     for name in "$@"; do
-        _install_single "$name" "$dry_run" "$skip_inspect"
+        _install_single "$name" "$dry_run" "$skip_inspect" "$needed"
     done
 }
 
@@ -672,24 +674,38 @@ _install_single() {
     local name="$1"
     local dry_run="$2"
     local skip_inspect="$3"
+    local needed="$4"
 
     local dbdir="${DBDIR}/${name}"
+    local srcdir="${SRCDIR}/${name}"
+
     if [[ -d "$dbdir" ]]; then
-        printf '%s is already installed (skipping)\n' "$name"
-        return
+        if [[ "$needed" -eq 1 ]]; then
+            printf '%s is up to date -- skipping\n' "$name"
+            return
+        fi
+        printf 'warning: %s is up to date -- reinstalling\n' "$name"
+        _remove_tracked "$name"
+        rm -rf "$dbdir"
     fi
 
     local -a clone_urls=()
     mapfile -t clone_urls < <(_resolve_urls "$name")
-    [[ ${#clone_urls[@]} -gt 0 ]] || {
+    if [[ ${#clone_urls[@]} -eq 0 ]]; then
         printf 'ERROR: no sources for %s\n' "'${name}'" >&2
         return 1
-    }
+    fi
 
     printf ':: Installing %s...\n' "$name"
-    _clone "$name" "${clone_urls[@]}"
 
-    local srcdir="${SRCDIR}/${name}"
+    if [[ -d "$srcdir" ]]; then
+        local branch
+        branch=$(git -C "$srcdir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+        timeout "$FETCH_TIMEOUT" git -C "$srcdir" fetch origin "$branch" &>/dev/null || true
+        git -C "$srcdir" reset --hard "origin/${branch}" &>/dev/null || true
+    else
+        _clone "$name" "${clone_urls[@]}"
+    fi
 
     if [[ ! -f "${srcdir}/Makefile" ]]; then
         rm -rf "$srcdir"
@@ -712,13 +728,15 @@ _install_single() {
     fi
 
     if _stage_and_deploy "$name" "$dry_run"; then
-        {
-            echo "$CLONE_SUCCESS_URL"
-            local u
-            for u in "${clone_urls[@]}"; do
-                [[ "$u" != "$CLONE_SUCCESS_URL" ]] && echo "$u"
-            done
-        } > "${dbdir}/urls"
+        if [[ -n "$CLONE_SUCCESS_URL" ]]; then
+            {
+                echo "$CLONE_SUCCESS_URL"
+                local u
+                for u in "${clone_urls[@]}"; do
+                    [[ "$u" != "$CLONE_SUCCESS_URL" ]] && echo "$u"
+                done
+            } > "${dbdir}/urls"
+        fi
 
         local commit
         commit=$(_safe_read_commit "${dbdir}/commit")
@@ -1097,6 +1115,7 @@ DRY_RUN=0
 YES=0
 FIX=0
 SKIP_INSPECT=0
+NEEDED=0
 ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -1105,6 +1124,7 @@ while [[ $# -gt 0 ]]; do
         -y|--yes)        YES=1; shift ;;
         --fix)           FIX=1; shift ;;
         --skip-inspect)  SKIP_INSPECT=1; shift ;;
+        --needed)        NEEDED=1; shift ;;
         -h|--help)       show_help ;;
         -*)              die "unknown option: $1" ;;
         *)               ARGS+=("$1"); shift ;;
@@ -1112,7 +1132,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$COMMAND" in
-    install)   cmd_install "$DRY_RUN" "$SKIP_INSPECT" ${ARGS[@]+"${ARGS[@]}"} ;;
+    install)   cmd_install "$DRY_RUN" "$SKIP_INSPECT" "$NEEDED" ${ARGS[@]+"${ARGS[@]}"} ;;
     update)    cmd_update "$DRY_RUN" "$SKIP_INSPECT" "${ARGS[0]:-}" ;;
     remove)    cmd_remove "$DRY_RUN" "$YES" "${ARGS[0]:-}" ;;
     list)      cmd_list ;;

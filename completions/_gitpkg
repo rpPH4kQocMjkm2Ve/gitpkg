@@ -61,6 +61,7 @@ _gitpkg() {
                     _arguments \
                         '(-n --dry-run)'{-n,--dry-run}'[Show what would be done]' \
                         '--skip-inspect[Skip Makefile review]' \
+                        '--needed[Do not reinstall up to date packages]' \
                         '*:name:_gitpkg_known_packages'
                     ;;
                 update)
