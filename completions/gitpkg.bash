@@ -1,0 +1,101 @@
+# bash completion for gitpkg
+
+_gitpkg() {
+    local cur prev words cword
+    _init_completion || return
+
+    local commands="install update remove list status files inspect verify repo-add repo-del repo-list search"
+
+    local cmd="" i
+    for ((i = 1; i < cword; i++)); do
+        case "${words[i]}" in
+            -*)  continue ;;
+            *)   cmd="${words[i]}"; break ;;
+        esac
+    done
+
+    if [[ -z "$cmd" ]]; then
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "-h --help -V --version" -- "$cur"))
+        else
+            COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+        fi
+        return
+    fi
+
+    # Installed packages
+    local -a pkgs=()
+    local d name
+    for d in /var/lib/gitpkg/*/; do
+        [[ -d "$d" ]] || continue
+        name="${d%/}"; name="${name##*/}"
+        pkgs+=("$name")
+    done
+
+    # Known packages from pkglist
+    local -a known=()
+    if [[ -f /etc/gitpkg/pkglist ]]; then
+        while IFS='|' read -r pname _; do
+            [[ -n "$pname" && "$pname" != \#* ]] && known+=("$pname")
+        done < /etc/gitpkg/pkglist
+    fi
+
+    # Configured repo URLs
+    local -a repo_urls=()
+    if [[ -f /etc/gitpkg/repos.conf ]]; then
+        while IFS= read -r line; do
+            [[ -n "$line" && "$line" != \#* ]] && repo_urls+=("$line")
+        done < /etc/gitpkg/repos.conf
+    fi
+
+    case "$cmd" in
+        install)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect" -- "$cur"))
+            else
+                local -a all=($(printf '%s\n' "${known[@]}" "${pkgs[@]}" | sort -u))
+                COMPREPLY=($(compgen -W "${all[*]}" -- "$cur"))
+            fi
+            ;;
+        update)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "-n --dry-run" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "${pkgs[*]}" -- "$cur"))
+            fi
+            ;;
+        remove)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "-n --dry-run -y --yes" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "${pkgs[*]}" -- "$cur"))
+            fi
+            ;;
+        files)
+            if [[ "$cur" != -* ]]; then
+                COMPREPLY=($(compgen -W "${pkgs[*]}" -- "$cur"))
+            fi
+            ;;
+        inspect)
+            if [[ "$cur" != -* ]]; then
+                local -a all=($(printf '%s\n' "${known[@]}" "${pkgs[@]}" | sort -u))
+                COMPREPLY=($(compgen -W "${all[*]}" -- "$cur"))
+            fi
+            ;;
+        verify)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--fix" -- "$cur"))
+            fi
+            ;;
+        repo-del)
+            if [[ "$cur" != -* ]]; then
+                COMPREPLY=($(compgen -W "${repo_urls[*]}" -- "$cur"))
+            fi
+            ;;
+        search)
+            # Free-text, no completion
+            ;;
+    esac
+}
+
+complete -F _gitpkg gitpkg

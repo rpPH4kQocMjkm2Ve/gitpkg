@@ -1,0 +1,7 @@
+# /etc/gitpkg/pkglist — known packages
+# Format: name|description
+# Used by 'gitpkg search' and tab-completion
+# Package names must match repository names under configured mirrors
+gitpkg|Git-based package manager
+atomic-upgrade|Atomic upgrade system for archlinux
+subs2srs-gtk3|A tool that creates Anki flashcards from movies and TV shows with subtitles, for language learning
