@@ -5,7 +5,7 @@ Minimal package manager for git + make projects. Repo-agnostic.
 ## How it works
 
 ```
-gitpkg install <name>
+gitpkg install <name>...
 
 1. Constructs clone URLs from configured sources:
    https://gitlab.com/user/<name>
@@ -36,7 +36,10 @@ gitpkg inspect <name> <url>
 gitpkg does not sandbox the build beyond running `make build`
 as the `nobody` user. `make install` runs as root.
 
-Use `--skip-inspect` to bypass Makefile review during install.
+During updates, if the Makefile has changed, the diff is shown
+for review before proceeding.
+
+Use `--skip-inspect` to bypass Makefile review during install and update.
 
 ## Install
 
@@ -64,16 +67,16 @@ PREFIX = /usr
 DESTDIR =
 
 build:
-	# compile step
+    # compile step
 
 install:
-	install -Dm755 myapp $(DESTDIR)$(PREFIX)/bin/myapp
+    install -Dm755 myapp $(DESTDIR)$(PREFIX)/bin/myapp
 ```
 
 ## Usage
 
 ```
-gitpkg install <name> [url] [fallback-url]
+gitpkg install <name>...
 gitpkg update [name]
 gitpkg remove <name>
 gitpkg list
@@ -119,7 +122,7 @@ User-added sources are stored in `/etc/gitpkg/repos.conf`.
 |------|----------|--------|
 | `-n, --dry-run` | install, update, remove | Show what would be done |
 | `-y, --yes` | remove | Skip confirmation |
-| `--skip-inspect` | install | Skip Makefile review and confirmation |
+| `--skip-inspect` | install, update | Skip Makefile review and confirmation |
 | `--fix` | verify | Auto-repair permissions |
 
 ## License
