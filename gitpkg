@@ -477,6 +477,7 @@ cmd_update() {
     acquire_lock
 
     local dry_run="$1"; shift
+    local skip_inspect="$1"; shift
     local name="${1:-}"
 
     if [[ -z "$name" ]]; then
@@ -484,18 +485,19 @@ cmd_update() {
         for d in "${DBDIR}"/*/; do
             [[ -d "$d" ]] || continue
             found=1
-            _update_single "$(basename "$d")" "$dry_run"
+            _update_single "$(basename "$d")" "$dry_run" "$skip_inspect"
         done
         [[ $found -eq 1 ]] || echo "No packages installed."
         return
     fi
 
-    _update_single "$name" "$dry_run"
+    _update_single "$name" "$dry_run" "$skip_inspect"
 }
 
 _update_single() {
     local name="$1"
     local dry_run="${2:-0}"
+    local skip_inspect="${3:-0}"
     local srcdir="${SRCDIR}/${name}"
     local dbdir="${DBDIR}/${name}"
 
@@ -555,6 +557,24 @@ _update_single() {
     if [[ "$dry_run" -eq 1 ]]; then
         echo ":: Would update ${name} [${old_commit:0:8} → ${new_commit:0:8}]"
         return
+    fi
+
+    # Review Makefile changes before applying
+    if [[ "$skip_inspect" -eq 0 ]]; then
+        local makefile_diff
+        makefile_diff=$(git -C "$srcdir" diff HEAD "origin/${branch}" -- Makefile 2>/dev/null || true)
+        if [[ -n "$makefile_diff" ]]; then
+            echo ""
+            echo "── Makefile changes for ${name} ──────────────────────────"
+            echo "$makefile_diff"
+            echo "────────────────────────────────────────────────────────────"
+            echo ""
+            read -rp ":: Makefile changed. Proceed with update of ${name}? [y/N] " answer
+            if [[ ! "$answer" =~ ^[Yy] ]]; then
+                echo ":: Skipped ${name}."
+                return
+            fi
+        fi
     fi
 
     echo ":: Updating ${name} [${old_commit:0:8} → ${new_commit:0:8}]..."
@@ -807,7 +827,7 @@ done
 
 case "$COMMAND" in
     install)   cmd_install "$DRY_RUN" "$SKIP_INSPECT" "${ARGS[@]}" ;;
-    update)    cmd_update "$DRY_RUN" "${ARGS[0]:-}" ;;
+    update)    cmd_update "$DRY_RUN" "$SKIP_INSPECT" "${ARGS[0]:-}" ;;
     remove)    cmd_remove "$DRY_RUN" "$YES" "${ARGS[0]:-}" ;;
     list)      cmd_list ;;
     status)    cmd_status ;;
