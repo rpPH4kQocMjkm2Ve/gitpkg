@@ -769,9 +769,7 @@ cmd_search() {
         [[ -z "$pname" || "$pname" == \#* ]] && continue
         if echo "${pname} ${pdesc}" | grep -qi "$query"; then
             found=1
-            local mark=" "
-            [[ -d "${DBDIR}/${pname}" ]] && mark="✓"
-            printf "  %s %-24s %s\n" "$mark" "$pname" "$pdesc"
+            printf "%-24s %s\n" "$pname" "$pdesc"
         fi
     done < "$PKGLIST"
 
