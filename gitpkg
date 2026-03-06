@@ -401,34 +401,44 @@ cmd_inspect() {
 cmd_install() {
     local dry_run="$1"; shift
     local skip_inspect="$1"; shift
-    local name="${1:-}"
-    local primary="${2:-}"
-    local fallback="${3:-}"
 
-    [[ -n "$name" ]] || die "usage: gitpkg install <name> [url] [fallback-url]"
+    [[ $# -gt 0 ]] || die "usage: gitpkg install <name>... [--skip-inspect] [-n]"
     [[ $EUID -eq 0 ]] || die "must run as root"
 
-    local dbdir="${DBDIR}/${name}"
-    [[ -d "$dbdir" ]] && die "${name} is already installed (use 'update')"
+    acquire_lock
 
-    local -a clone_urls=()
-    if [[ -n "$primary" ]]; then
-        clone_urls+=("$primary")
-        [[ -n "$fallback" ]] && clone_urls+=("$fallback")
-    else
-        mapfile -t clone_urls < <(_resolve_urls "$name")
-        [[ ${#clone_urls[@]} -gt 0 ]] || \
-            die "no sources for '${name}'. Specify URL or run 'gitpkg repo-add <base_url>'."
+    local name
+    for name in "$@"; do
+        _install_single "$name" "$dry_run" "$skip_inspect"
+    done
+}
+
+_install_single() {
+    local name="$1"
+    local dry_run="$2"
+    local skip_inspect="$3"
+
+    local dbdir="${DBDIR}/${name}"
+    if [[ -d "$dbdir" ]]; then
+        echo ":: ${name} is already installed (skipping)"
+        return
     fi
 
-    acquire_lock
+    local -a clone_urls=()
+    mapfile -t clone_urls < <(_resolve_urls "$name")
+    [[ ${#clone_urls[@]} -gt 0 ]] || {
+        echo "ERROR: no sources for '${name}'" >&2
+        return 1
+    }
+
     _clone "$name" "${clone_urls[@]}"
 
     local srcdir="${SRCDIR}/${name}"
 
     if [[ ! -f "${srcdir}/Makefile" ]]; then
         rm -rf "$srcdir"
-        die "no Makefile found in ${name}"
+        echo "ERROR: no Makefile found in ${name}" >&2
+        return 1
     fi
 
     if [[ "$skip_inspect" -eq 0 && "$dry_run" -eq 0 ]]; then
@@ -437,11 +447,11 @@ cmd_install() {
         cat "${srcdir}/Makefile"
         echo "────────────────────────────────────────────────────────────"
         echo ""
-        read -rp ":: Proceed with install? [y/N] " answer
+        read -rp ":: Proceed with install of ${name}? [y/N] " answer
         if [[ ! "$answer" =~ ^[Yy] ]]; then
             rm -rf "$srcdir"
-            echo ":: Aborted."
-            exit 0
+            echo ":: Skipped ${name}."
+            return
         fi
     fi
 
@@ -458,7 +468,7 @@ cmd_install() {
         echo ":: Installed ${name} [${commit:0:8}]"
     else
         rm -rf "${SRCDIR}/${name}"
-        echo ":: Dry run complete — nothing was installed."
+        echo ":: Dry run complete for ${name} — nothing was installed."
     fi
 }
 
@@ -798,7 +808,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$COMMAND" in
-    install)   cmd_install "$DRY_RUN" "$SKIP_INSPECT" "${ARGS[@]:-}" ;;
+    install)   cmd_install "$DRY_RUN" "$SKIP_INSPECT" "${ARGS[@]}" ;;
     update)    cmd_update "$DRY_RUN" "${ARGS[0]:-}" ;;
     remove)    cmd_remove "$DRY_RUN" "$YES" "${ARGS[0]:-}" ;;
     list)      cmd_list ;;

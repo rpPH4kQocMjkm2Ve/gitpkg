@@ -61,9 +61,7 @@ _gitpkg() {
                     _arguments \
                         '(-n --dry-run)'{-n,--dry-run}'[Show what would be done]' \
                         '--skip-inspect[Skip Makefile review]' \
-                        '1:name:_gitpkg_known_packages' \
-                        '2::url:' \
-                        '3::fallback url:'
+                        '*:name:_gitpkg_known_packages'
                     ;;
                 update)
                     _arguments \
