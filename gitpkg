@@ -1,12 +1,13 @@
 #!/bin/bash
 # gitpkg — minimal package manager for git + make projects
 #
+# All build/install steps run sandboxed via bubblewrap.
 # Tracks installed files via DESTDIR staging.
 # Resolves packages from configured base URLs (repo-agnostic).
 
 set -euo pipefail
 
-readonly VERSION="0.4.0"
+readonly VERSION="0.5.0"
 readonly DBDIR="/var/lib/gitpkg"
 readonly SRCDIR="/var/cache/gitpkg"
 readonly LOCK_FILE="/var/lock/gitpkg.lock"
@@ -14,6 +15,10 @@ readonly CONFDIR="/etc/gitpkg"
 readonly REPOS_CONF="${CONFDIR}/repos.conf"
 readonly MIRRORLIST="${CONFDIR}/mirrorlist"
 readonly PKGLIST="${CONFDIR}/pkglist"
+readonly CLONE_TIMEOUT="${GITPKG_CLONE_TIMEOUT:-120}"
+readonly FETCH_TIMEOUT="${GITPKG_FETCH_TIMEOUT:-30}"
+readonly LSREMOTE_TIMEOUT="${GITPKG_LSREMOTE_TIMEOUT:-15}"
+readonly MAX_STATUS_PARALLEL=8
 
 readonly -a PROTECTED_DIRS=(
     /usr /usr/bin /usr/lib /usr/share /usr/local /usr/local/bin
@@ -35,31 +40,40 @@ readonly -A EXPECTED_PERMS=(
     [/run]=755
 )
 
+# ── Dependency check ──────────────────────────────────────
+
+_check_deps() {
+    local dep
+    for dep in git bwrap make find awk sha256sum timeout; do
+        command -v "$dep" &>/dev/null || die "required dependency not found: ${dep}"
+    done
+}
+
 # ── Output helpers ────────────────────────────────────────
 
-die() { echo "ERROR: $*" >&2; exit 1; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 # ── Help ──────────────────────────────────────────────────
 
 show_help() {
-    cat << EOF
-gitpkg v${VERSION} — git + make package manager
+    cat << 'EOF'
+gitpkg v0.5.0 — git + make package manager
 
 Usage: gitpkg <command> [options] [args]
 
 Commands:
-    install  <name> [url] [fallback-url]  Clone, build, install
-    update   [name]                       Update one or all packages
-    remove   <name>                       Uninstall and remove source
-    list                                  List installed packages
-    status                                Check for upstream updates
-    files    <name>                       List tracked files
-    inspect  <name> [url]                 Show Makefile before installing
-    verify                                Check system directory permissions
-    repo-add  <base_url>                  Add a package source
-    repo-del  <base_url>                  Remove a package source
-    repo-list                             List configured sources
-    search    <query>                     Search known packages
+    install  <name> [name...]           Clone, build, install
+    update   [name]                     Update one or all packages
+    remove   <name>                     Uninstall and remove source
+    list                                List installed packages
+    status                              Check for upstream updates
+    files    <name>                     List tracked files
+    inspect  <name> [url]              Show Makefile before installing
+    verify   [name]                     Check system dirs or package integrity
+    repo-add  <base_url>                Add a package source
+    repo-del  <base_url>               Remove a package source
+    repo-list                           List configured sources
+    search    <query>                   Search known packages
 
 Options:
     -n, --dry-run    Show what would be done (install, update, remove)
@@ -69,10 +83,16 @@ Options:
     -h, --help       Show this help
     -V, --version    Show version
 
+Environment:
+    GITPKG_CLONE_TIMEOUT     Clone timeout in seconds (default: 120)
+    GITPKG_FETCH_TIMEOUT     Fetch timeout in seconds (default: 30)
+    GITPKG_LSREMOTE_TIMEOUT  Status check timeout in seconds (default: 15)
+
 Security:
-    Always review the Makefile before installing. gitpkg will show
-    it automatically during install, or use 'inspect' to view it
-    without installing.
+    Build and install steps run inside a bubblewrap sandbox with
+    PID/UTS/IPC namespaces isolated, system dirs read-only.
+    DESTDIR is enforced at filesystem level — installed files are
+    staged, validated, then deployed. Always review the Makefile.
 
 EOF
     exit 0
@@ -98,11 +118,13 @@ acquire_lock() {
 
 STAGE_DIR=""
 BUILD_OVERLAY=""
+STATUS_TMPDIR=""
 
 cleanup() {
     set +e
     [[ -n "$BUILD_OVERLAY" && -d "$BUILD_OVERLAY" ]] && rm -rf "$BUILD_OVERLAY"
     [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" ]] && rm -rf "$STAGE_DIR"
+    [[ -n "$STATUS_TMPDIR" && -d "$STATUS_TMPDIR" ]] && rm -rf "$STATUS_TMPDIR"
     if [[ "$LOCK_ACQUIRED" -eq 1 ]]; then
         flock -u 9 2>/dev/null
         exec 9>&- 2>/dev/null
@@ -114,6 +136,61 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' TERM INT HUP
 
+# ── Path validation ───────────────────────────────────────
+
+_validate_path() {
+    local filepath="$1"
+    if [[ -z "$filepath" ]]; then
+        return 1
+    fi
+    if [[ "$filepath" == /* ]]; then
+        return 1
+    fi
+    if [[ "$filepath" =~ \.\. ]]; then
+        return 1
+    fi
+    if [[ "$filepath" == *$'\n'* ]]; then
+        return 1
+    fi
+    return 0
+}
+
+_validate_filelist() {
+    local filelist="$1"
+    local bad=0
+    while IFS= read -r f; do
+        if [[ -z "$f" ]]; then
+            continue
+        fi
+        if ! _validate_path "$f"; then
+            printf 'REJECTED: dangerous path in filelist: %s\n' "$f" >&2
+            bad=1
+        fi
+    done < "$filelist"
+    return "$bad"
+}
+
+_validate_symlinks() {
+    local stagedir="$1" filelist="$2"
+    local bad=0
+    while IFS= read -r f; do
+        if [[ -z "$f" ]]; then
+            continue
+        fi
+        local staged="${stagedir}/${f}"
+        if [[ ! -L "$staged" ]]; then
+            continue
+        fi
+        local target
+        target=$(readlink "$staged")
+        if [[ "$target" =~ \.\. ]]; then
+            printf 'REJECTED: symlink with traversal: %s -> %s\n' "$f" "$target" >&2
+            bad=1
+        fi
+    done < "$filelist"
+    return "$bad"
+}
+
 # ── Internal helpers ──────────────────────────────────────
 
 is_protected_dir() {
@@ -124,8 +201,6 @@ is_protected_dir() {
     return 1
 }
 
-# Emit candidate clone URLs for a package name.
-# Reads repos.conf first (user sources), then mirrorlist (shipped defaults).
 _resolve_urls() {
     local name="$1"
     local conf base
@@ -133,12 +208,11 @@ _resolve_urls() {
         [[ -f "$conf" && -r "$conf" ]] || continue
         while IFS= read -r base; do
             [[ -z "$base" || "$base" == \#* ]] && continue
-            echo "${base%/}/${name}"
+            printf '%s/%s\n' "${base%/}" "$name"
         done < "$conf"
     done | _dedup_urls
 }
 
-# Filter: deduplicate non-empty lines (stdin → stdout).
 _dedup_urls() {
     awk 'NF && !seen[$0]++'
 }
@@ -151,6 +225,97 @@ _ensure_conf() {
     fi
 }
 
+_safe_read_commit() {
+    local commitfile="$1"
+    if [[ -f "$commitfile" && -s "$commitfile" ]]; then
+        head -c 64 "$commitfile" | tr -cd 'a-f0-9'
+    else
+        printf 'unknown'
+    fi
+}
+
+_strip_escape_sequences() {
+    sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b\][^\x07]*\x07//g; s/\x1b[PX^_][^\x1b]*\x1b\\//g; s/\x1b.//g'
+}
+
+# ── Sandbox ───────────────────────────────────────────────
+
+# Build bwrap args (NUL-separated for safe parsing).
+# Network is allowed — many Makefiles have `install: build` which
+# re-triggers dependency resolution. Security is enforced via
+# DESTDIR staging + path/symlink validation, not network isolation.
+_build_bwrap_args() {
+    local -a args=(
+        --die-with-parent
+        --new-session
+        --unshare-pid
+        --unshare-uts
+        --unshare-ipc
+        --clearenv
+        --setenv PATH "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        --setenv HOME "${HOME}"
+        --setenv TERM "dumb"
+    )
+
+    [[ -d /usr ]] && args+=(--ro-bind /usr /usr)
+
+    local d
+    for d in /bin /lib /lib64 /lib32 /sbin; do
+        if [[ -L "$d" ]]; then
+            args+=(--symlink "$(readlink "$d")" "$d")
+        elif [[ -d "$d" ]]; then
+            args+=(--ro-bind "$d" "$d")
+        fi
+    done
+
+    args+=(--proc /proc --dev /dev --tmpfs /tmp --tmpfs /run)
+    [[ -d /etc ]] && args+=(--ro-bind /etc /etc)
+
+    printf '%s\0' "${args[@]}"
+}
+
+_sandboxed_make() {
+    local target="$1"
+    local workdir="$2"
+    local destdir="${3:-}"
+
+    local -a bwrap_args=()
+    while IFS= read -r -d '' arg; do
+        bwrap_args+=("$arg")
+    done < <(_build_bwrap_args)
+
+    bwrap_args+=(--bind "$workdir" "$workdir")
+    [[ -n "$destdir" ]] && bwrap_args+=(--bind "$destdir" "$destdir")
+
+    [[ -n "${MAKEFLAGS:-}" ]] && bwrap_args+=(--setenv MAKEFLAGS "$MAKEFLAGS")
+
+    # Bind build tool caches (dotnet, cargo, pip, etc.)
+    local cache_home="${HOME}/.cache"
+    if [[ -d "$cache_home" ]]; then
+        bwrap_args+=(--bind "$cache_home" "$cache_home")
+        bwrap_args+=(--setenv XDG_CACHE_HOME "$cache_home")
+    fi
+    local d
+    for d in "${HOME}/.dotnet" "${HOME}/.nuget" "${HOME}/.cargo"; do
+        [[ -d "$d" ]] && bwrap_args+=(--bind "$d" "$d")
+    done
+    if [[ -d "${HOME}/.dotnet" ]]; then
+        bwrap_args+=(--setenv DOTNET_CLI_HOME "${HOME}")
+        bwrap_args+=(--setenv DOTNET_NOLOGO "1")
+        bwrap_args+=(--setenv DOTNET_CLI_TELEMETRY_OPTOUT "1")
+    fi
+
+    local -a make_args=(-C "$workdir" "$target")
+    [[ -n "$destdir" ]] && make_args+=(DESTDIR="$destdir")
+
+    bwrap "${bwrap_args[@]}" -- make "${make_args[@]}"
+}
+
+_has_make_target() {
+    local workdir="$1" target="$2"
+    grep -q "^${target}[[:space:]]*:" "${workdir}/Makefile" 2>/dev/null
+}
+
 # ── Verify permissions ────────────────────────────────────
 
 _verify_permissions() {
@@ -158,6 +323,7 @@ _verify_permissions() {
     local bad=0
 
     echo ":: Verifying directory permissions..."
+    local d
     for d in "${!EXPECTED_PERMS[@]}"; do
         [[ -d "$d" ]] || continue
         local mode expected
@@ -165,14 +331,14 @@ _verify_permissions() {
         expected="${EXPECTED_PERMS[$d]}"
         if [[ "$mode" != "$expected" ]]; then
             if [[ "$fix" -eq 1 ]]; then
-                echo "   WARN: ${d} has mode ${mode}, expected ${expected} — fixing!"
+                printf '   WARN: %s has mode %s, expected %s — fixing!\n' "$d" "$mode" "$expected"
                 chmod "$expected" "$d"
             else
-                echo "   WARN: ${d} has mode ${mode}, expected ${expected}"
+                printf '   WARN: %s has mode %s, expected %s\n' "$d" "$mode" "$expected"
             fi
             bad=1
         else
-            echo "   OK: ${d} ${mode}"
+            printf '   OK: %s %s\n' "$d" "$mode"
         fi
     done
 
@@ -185,20 +351,86 @@ _verify_permissions() {
     return "$bad"
 }
 
+# ── Package integrity verification ────────────────────────
+
+_record_checksums() {
+    local dbdir="$1"
+    local filelist="${dbdir}/files"
+    local checksumfile="${dbdir}/checksums"
+
+    : > "$checksumfile"
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        if [[ -L "/${f}" ]]; then
+            local link_target
+            link_target=$(readlink "/${f}")
+            printf 'SYMLINK\t%s\t%s\n' "$f" "$link_target" >> "$checksumfile"
+        elif [[ -f "/${f}" ]]; then
+            local hash
+            hash=$(sha256sum "/${f}" | awk '{print $1}')
+            printf '%s\t%s\n' "$hash" "$f" >> "$checksumfile"
+        fi
+    done < "$filelist"
+}
+
+_verify_package() {
+    local name="$1"
+    local dbdir="${DBDIR}/${name}"
+    [[ -d "$dbdir" ]] || die "${name} is not installed"
+
+    if [[ ! -f "${dbdir}/checksums" || ! -s "${dbdir}/checksums" ]]; then
+        echo "${name}: no checksums recorded (reinstall to generate)"
+        return 1
+    fi
+
+    local bad=0
+    while IFS=$'\t' read -r field1 field2 field3; do
+        [[ -z "$field1" ]] && continue
+        if [[ "$field1" == "SYMLINK" ]]; then
+            local filepath="$field2" expected_target="$field3"
+            if [[ ! -L "/${filepath}" ]]; then
+                printf '  MISSING SYMLINK: /%s\n' "$filepath"
+                bad=1
+            else
+                local actual_target
+                actual_target=$(readlink "/${filepath}")
+                if [[ "$actual_target" != "$expected_target" ]]; then
+                    printf '  SYMLINK CHANGED: /%s (%s -> %s)\n' "$filepath" "$expected_target" "$actual_target"
+                    bad=1
+                fi
+            fi
+        else
+            local expected_hash="$field1" filepath="$field2"
+            if [[ ! -f "/${filepath}" ]]; then
+                printf '  MISSING:  /%s\n' "$filepath"
+                bad=1
+            else
+                local actual
+                actual=$(sha256sum "/${filepath}" | awk '{print $1}')
+                if [[ "$expected_hash" != "$actual" ]]; then
+                    printf '  MODIFIED: /%s\n' "$filepath"
+                    bad=1
+                fi
+            fi
+        fi
+    done < "${dbdir}/checksums"
+
+    if [[ $bad -eq 0 ]]; then
+        printf '%s: OK\n' "$name"
+    fi
+    return "$bad"
+}
+
 # ── Clone ─────────────────────────────────────────────────
 
-# Global: set by _clone to the URL that succeeded.
 CLONE_SUCCESS_URL=""
 
-# Try each URL in order until one succeeds.
-# Usage: _clone <name> <url1> [url2] [url3] ...
 _clone() {
     local name="$1"; shift
     local -a urls=("$@")
     local srcdir="${SRCDIR}/${name}"
     CLONE_SUCCESS_URL=""
 
-    # Clean stale cache (source exists but package not registered)
     if [[ -d "$srcdir" && ! -d "${DBDIR}/${name}" ]]; then
         echo ":: Cleaning stale source cache for ${name}..."
         rm -rf "$srcdir"
@@ -208,8 +440,8 @@ _clone() {
 
     local url
     for url in "${urls[@]}"; do
-        echo -n "   Cloning ${url} ... "
-        if git clone --filter=blob:none "$url" "$srcdir" &>/dev/null; then
+        printf '   Cloning %s ... ' "$url"
+        if timeout "$CLONE_TIMEOUT" git clone --filter=blob:none "$url" "$srcdir" &>/dev/null; then
             echo "ok"
             CLONE_SUCCESS_URL="$url"
             return 0
@@ -229,41 +461,59 @@ _stage_and_deploy() {
     local dbdir="${DBDIR}/${name}"
 
     STAGE_DIR=$(mktemp -d /tmp/gitpkg-stage.XXXXXX)
-
-    echo ":: Building ${name}..."
     BUILD_OVERLAY=$(mktemp -d /tmp/gitpkg-build.XXXXXX)
-    cp -a "${srcdir}/." "$BUILD_OVERLAY"
-    chown -R nobody:nobody "$BUILD_OVERLAY"
 
-    if ! runuser -u nobody -- make -C "$BUILD_OVERLAY" build 2>/dev/null; then
-        true
+    cp -a "${srcdir}/." "$BUILD_OVERLAY"
+    chmod -R a+rX "$BUILD_OVERLAY"
+    chmod 777 "$STAGE_DIR"
+
+    if _has_make_target "$BUILD_OVERLAY" build; then
+        echo ":: Building ${name}..."
+        _sandboxed_make build "$BUILD_OVERLAY"
     fi
 
     echo ":: Staging ${name}..."
-    make -C "$BUILD_OVERLAY" install DESTDIR="$STAGE_DIR"
+    _sandboxed_make install "$BUILD_OVERLAY" "$STAGE_DIR"
 
     rm -rf "$BUILD_OVERLAY"
     BUILD_OVERLAY=""
 
     mkdir -p "$dbdir"
-    find "$STAGE_DIR" -not -type d -printf '%P\n' | sort > "${dbdir}/files"
+
+    find "$STAGE_DIR" -not -type d -printf '%P\n' | tr -d '\r' | sort > "${dbdir}/files.tmp"
+
+    if ! _validate_filelist "${dbdir}/files.tmp"; then
+        rm -f "${dbdir}/files.tmp"
+        rm -rf "$STAGE_DIR" "$dbdir"
+        STAGE_DIR=""
+        die "filelist contains dangerous paths — aborting"
+    fi
+
+    if ! _validate_symlinks "$STAGE_DIR" "${dbdir}/files.tmp"; then
+        rm -f "${dbdir}/files.tmp"
+        rm -rf "$STAGE_DIR" "$dbdir"
+        STAGE_DIR=""
+        die "staged symlinks contain path traversal — aborting"
+    fi
+
+    mv "${dbdir}/files.tmp" "${dbdir}/files"
 
     local file_count
     file_count=$(wc -l < "${dbdir}/files")
     if [[ "$file_count" -eq 0 ]]; then
-        rm -rf "$STAGE_DIR"
+        rm -rf "$STAGE_DIR" "$dbdir"
         STAGE_DIR=""
         die "make install produced no files"
     fi
 
     if [[ "$dry_run" -eq 1 ]]; then
-        echo "   Would deploy ${file_count} files:"
+        printf '   Would deploy %d files:\n' "$file_count"
         while IFS= read -r f; do
             [[ -z "$f" ]] && continue
-            if [[ -f "/${f}" ]]; then
-                echo "   /${f}  (overwrite)"
+            if [[ -e "/${f}" || -L "/${f}" ]]; then
+                printf '   /%s  (overwrite)\n' "$f"
             else
-                echo "   /${f}"
+                printf '   /%s\n' "$f"
             fi
         done < "${dbdir}/files"
         rm -rf "$STAGE_DIR" "$dbdir"
@@ -271,20 +521,32 @@ _stage_and_deploy() {
         return 1
     fi
 
-    echo ":: Deploying ${name} (${file_count} files)..."
+    printf ':: Deploying %s (%d files)...\n' "$name" "$file_count"
     while IFS= read -r f; do
         [[ -z "$f" ]] && continue
         local dest="/${f}"
         local destdir
         destdir=$(dirname "$dest")
         [[ -d "$destdir" ]] || install -d -m755 "$destdir"
-        cp -a "${STAGE_DIR}/${f}" "$dest"
+
+        local staged="${STAGE_DIR}/${f}"
+        if [[ -L "$staged" ]]; then
+            local link_target
+            link_target=$(readlink "$staged")
+            ln -sf "$link_target" "$dest"
+        else
+            local mode
+            mode=$(stat -c '%a' "$staged")
+            install -m "$mode" "$staged" "$dest"
+        fi
     done < "${dbdir}/files"
 
     rm -rf "$STAGE_DIR"
     STAGE_DIR=""
 
     git -C "$srcdir" rev-parse HEAD > "${dbdir}/commit"
+
+    _record_checksums "$dbdir"
 
     _verify_permissions 0 || true
 }
@@ -299,7 +561,8 @@ _remove_tracked() {
     local removed=0
     while IFS= read -r f; do
         [[ -z "$f" ]] && continue
-        if [[ -f "/${f}" ]]; then
+        _validate_path "$f" || continue
+        if [[ -L "/${f}" || -f "/${f}" ]]; then
             rm -f "/${f}"
             removed=$((removed + 1))
         fi
@@ -317,24 +580,20 @@ _remove_tracked() {
         rmdir "$d" 2>/dev/null || true
     done
 
-    echo "   Removed ${removed} file(s)"
+    printf '   Removed %d file(s)\n' "$removed"
 }
 
 # ── Inspect Makefile ──────────────────────────────────────
 
-# Display a Makefile. Uses $PAGER, falls back to less, then cat.
 _show_makefile() {
     local makefile="$1"
-
-    if [[ ! -f "$makefile" ]]; then
-        die "no Makefile found"
-    fi
+    [[ -f "$makefile" ]] || die "no Makefile found"
 
     if [[ -t 1 ]]; then
-        ${PAGER:-less} "$makefile"
+        _strip_escape_sequences < "$makefile" | ${PAGER:-less}
     else
         echo "── Makefile ────────────────────────────────────────────────"
-        cat "$makefile"
+        _strip_escape_sequences < "$makefile"
         echo "────────────────────────────────────────────────────────────"
     fi
 }
@@ -347,17 +606,12 @@ cmd_inspect() {
 
     local srcdir="${SRCDIR}/${name}"
 
-    # Case 1: already installed / source cached
     if [[ -d "$srcdir" ]]; then
-        if [[ ! -r "${srcdir}/Makefile" ]]; then
-            # Try as root hint
-            die "${srcdir}/Makefile is not readable (try with sudo)"
-        fi
+        [[ -r "${srcdir}/Makefile" ]] || die "${srcdir}/Makefile is not readable"
         _show_makefile "${srcdir}/Makefile"
         return
     fi
 
-    # Case 2: clone to temp, show, cleanup
     local -a clone_urls=()
     if [[ -n "$url" ]]; then
         clone_urls+=("$url")
@@ -372,13 +626,14 @@ cmd_inspect() {
 
     local cloned=0 u
     for u in "${clone_urls[@]}"; do
-        echo -n "   Fetching ${u} ... "
-        if git clone --filter=blob:none --depth=1 "$u" "$tmpdir/repo" &>/dev/null; then
+        printf '   Fetching %s ... ' "$u"
+        if timeout "$CLONE_TIMEOUT" git clone --filter=blob:none --depth=1 "$u" "${tmpdir}/repo" &>/dev/null; then
             echo "ok"
             cloned=1
             break
         fi
         echo "fail"
+        rm -rf "${tmpdir}/repo"
     done
 
     if [[ $cloned -eq 0 ]]; then
@@ -404,6 +659,7 @@ cmd_install() {
     [[ $# -gt 0 ]] || die "usage: gitpkg install <name>... [--skip-inspect] [-n]"
     [[ $EUID -eq 0 ]] || die "must run as root"
 
+    _check_deps
     acquire_lock
 
     local name
@@ -419,38 +675,38 @@ _install_single() {
 
     local dbdir="${DBDIR}/${name}"
     if [[ -d "$dbdir" ]]; then
-        echo "${name} is already installed (skipping)"
+        printf '%s is already installed (skipping)\n' "$name"
         return
     fi
 
     local -a clone_urls=()
     mapfile -t clone_urls < <(_resolve_urls "$name")
     [[ ${#clone_urls[@]} -gt 0 ]] || {
-        echo "ERROR: no sources for '${name}'" >&2
+        printf 'ERROR: no sources for %s\n' "'${name}'" >&2
         return 1
     }
 
-    echo ":: Installing ${name}..."
+    printf ':: Installing %s...\n' "$name"
     _clone "$name" "${clone_urls[@]}"
 
     local srcdir="${SRCDIR}/${name}"
 
     if [[ ! -f "${srcdir}/Makefile" ]]; then
         rm -rf "$srcdir"
-        echo "ERROR: no Makefile found in ${name}" >&2
+        printf 'ERROR: no Makefile found in %s\n' "$name" >&2
         return 1
     fi
 
     if [[ "$skip_inspect" -eq 0 && "$dry_run" -eq 0 ]]; then
         echo ""
-        echo "── Makefile for ${name} ─────────────────────────────────"
-        cat "${srcdir}/Makefile"
+        printf '── Makefile for %s ─────────────────────────────────\n' "$name"
+        _strip_escape_sequences < "${srcdir}/Makefile"
         echo "────────────────────────────────────────────────────────────"
         echo ""
         read -rp "Proceed with install of ${name}? [y/N] " answer
         if [[ ! "$answer" =~ ^[Yy] ]]; then
             rm -rf "$srcdir"
-            echo "Skipped ${name}."
+            printf 'Skipped %s.\n' "$name"
             return
         fi
     fi
@@ -458,22 +714,25 @@ _install_single() {
     if _stage_and_deploy "$name" "$dry_run"; then
         {
             echo "$CLONE_SUCCESS_URL"
+            local u
             for u in "${clone_urls[@]}"; do
                 [[ "$u" != "$CLONE_SUCCESS_URL" ]] && echo "$u"
             done
         } > "${dbdir}/urls"
 
         local commit
-        commit=$(<"${dbdir}/commit")
-        echo "Installed ${name} [${commit:0:8}]"
+        commit=$(_safe_read_commit "${dbdir}/commit")
+        printf 'Installed %s [%s]\n' "$name" "${commit:0:8}"
     else
         rm -rf "${SRCDIR}/${name}"
-        echo "Dry run complete for ${name} — nothing was installed."
+        printf 'Dry run complete for %s — nothing was installed.\n' "$name"
     fi
 }
 
 cmd_update() {
     [[ $EUID -eq 0 ]] || die "must run as root"
+
+    _check_deps
     acquire_lock
 
     local dry_run="$1"; shift
@@ -504,11 +763,10 @@ _update_single() {
     [[ -d "$dbdir" ]] || die "${name} is not installed"
 
     local old_commit
-    old_commit=$(<"${dbdir}/commit")
+    old_commit=$(_safe_read_commit "${dbdir}/commit")
 
-    # Re-clone if source cache is missing
     if [[ ! -d "$srcdir" ]]; then
-        echo ":: Re-cloning ${name} (source cache missing)..."
+        printf ':: Re-cloning %s (source cache missing)...\n' "$name"
         local -a reclone_urls=()
         mapfile -t reclone_urls < <({
             [[ -f "${dbdir}/urls" ]] && cat "${dbdir}/urls"
@@ -521,8 +779,8 @@ _update_single() {
     local branch
     branch=$(git -C "$srcdir" rev-parse --abbrev-ref HEAD)
 
-    echo ":: Fetching ${name}..."
-    if ! git -C "$srcdir" fetch origin "$branch" &>/dev/null; then
+    printf ':: Fetching %s...\n' "$name"
+    if ! timeout "$FETCH_TIMEOUT" git -C "$srcdir" fetch origin "$branch" &>/dev/null; then
         echo ":: Primary fetch failed, trying fallbacks..."
         local fetched=0
         local -a fb_urls=()
@@ -533,9 +791,9 @@ _update_single() {
 
         local u
         for u in "${fb_urls[@]}"; do
-            echo -n "   Trying ${u} ... "
+            printf '   Trying %s ... ' "$u"
             git -C "$srcdir" remote set-url origin "$u"
-            if git -C "$srcdir" fetch origin "$branch" &>/dev/null; then
+            if timeout "$FETCH_TIMEOUT" git -C "$srcdir" fetch origin "$branch" &>/dev/null; then
                 echo "ok"
                 fetched=1
                 break
@@ -550,40 +808,39 @@ _update_single() {
     new_commit=$(git -C "$srcdir" rev-parse "origin/${branch}")
 
     if [[ "$old_commit" == "$new_commit" ]]; then
-        echo "${name}: up to date [${old_commit:0:8}]"
+        printf '%s: up to date [%s]\n' "$name" "${old_commit:0:8}"
         return
     fi
 
     if [[ "$dry_run" -eq 1 ]]; then
-        echo "${name}: ${old_commit:0:8} → ${new_commit:0:8} (would update)"
+        printf '%s: %s -> %s (would update)\n' "$name" "${old_commit:0:8}" "${new_commit:0:8}"
         return
     fi
 
-    # Review Makefile changes before applying
     if [[ "$skip_inspect" -eq 0 ]]; then
         local makefile_diff
         makefile_diff=$(git -C "$srcdir" diff HEAD "origin/${branch}" -- Makefile 2>/dev/null || true)
         if [[ -n "$makefile_diff" ]]; then
             echo ""
-            echo "── Makefile changes for ${name} ──────────────────────────"
-            echo "$makefile_diff"
+            printf '── Makefile changes for %s ──────────────────────────\n' "$name"
+            printf '%s\n' "$makefile_diff" | _strip_escape_sequences
             echo "────────────────────────────────────────────────────────────"
             echo ""
             read -rp "Makefile changed. Proceed with update of ${name}? [y/N] " answer
             if [[ ! "$answer" =~ ^[Yy] ]]; then
-                echo "Skipped ${name}."
+                printf 'Skipped %s.\n' "$name"
                 return
             fi
         fi
     fi
 
-    echo ":: Updating ${name} [${old_commit:0:8} → ${new_commit:0:8}]..."
+    printf ':: Updating %s [%s -> %s]...\n' "$name" "${old_commit:0:8}" "${new_commit:0:8}"
     git -C "$srcdir" reset --hard "origin/${branch}"
 
     _remove_tracked "$name"
     _stage_and_deploy "$name" 0
 
-    echo "Updated ${name}"
+    printf 'Updated %s\n' "$name"
 }
 
 cmd_remove() {
@@ -591,14 +848,14 @@ cmd_remove() {
     local yes="$1"; shift
     local name="${1:-}"
 
-    [[ -n "$name" ]]          || die "usage: gitpkg remove <name>"
-    [[ $EUID -eq 0 ]]         || die "must run as root"
+    [[ -n "$name" ]]            || die "usage: gitpkg remove <name>"
+    [[ $EUID -eq 0 ]]           || die "must run as root"
     [[ -d "${DBDIR}/${name}" ]] || die "${name} is not installed"
 
     acquire_lock
 
     if [[ "$dry_run" -eq 1 ]]; then
-        echo "Would remove ${name}:"
+        printf 'Would remove %s:\n' "$name"
         local filelist="${DBDIR}/${name}/files"
         [[ -f "$filelist" ]] && sed 's|^|   /|' "$filelist"
         return
@@ -607,15 +864,15 @@ cmd_remove() {
     if [[ "$yes" -eq 0 ]]; then
         local file_count=0
         [[ -f "${DBDIR}/${name}/files" ]] && file_count=$(wc -l < "${DBDIR}/${name}/files")
-        echo "Will remove ${name} (${file_count} files)"
+        printf 'Will remove %s (%d files)\n' "$name" "$file_count"
         read -rp "Continue? [y/N] " answer
         [[ "$answer" =~ ^[Yy] ]] || { echo "Aborted."; exit 0; }
     fi
 
-    echo ":: Removing ${name}..."
+    printf ':: Removing %s...\n' "$name"
     _remove_tracked "$name"
     rm -rf "${DBDIR}/${name}" "${SRCDIR}/${name}"
-    echo "Removed ${name}"
+    printf 'Removed %s\n' "$name"
 }
 
 cmd_list() {
@@ -625,42 +882,67 @@ cmd_list() {
         found=1
         local name commit
         name=$(basename "$d")
-        commit=$(<"${d}commit")
-        printf "%-28s %s\n" "$name" "${commit:0:12}"
+        commit=$(_safe_read_commit "${d}commit")
+        printf '%-28s %s\n' "$name" "${commit:0:12}"
     done
     [[ $found -eq 1 ]] || echo "No packages installed."
 }
 
 cmd_status() {
+    STATUS_TMPDIR=$(mktemp -d /tmp/gitpkg-status.XXXXXX)
+    local -a pids=() tmpfiles=()
     local found=0
+    local running=0
+
     for d in "${DBDIR}"/*/; do
         [[ -d "$d" ]] || continue
         found=1
-        local name commit
-        name=$(basename "$d")
-        commit=$(<"${d}commit")
 
-        # Read URL from dbdir (always readable), not from source tree
-        local origin_url=""
+        local name commit origin_url
+        name=$(basename "$d")
+        commit=$(_safe_read_commit "${d}commit")
+        origin_url=""
         [[ -f "${d}urls" ]] && origin_url=$(head -n1 "${d}urls" 2>/dev/null || true)
 
-        if [[ -z "$origin_url" ]]; then
-            printf "%-28s ? %s (no URL recorded)\n" "$name" "${commit:0:12}"
-            continue
-        fi
+        local tmp="${STATUS_TMPDIR}/${name}"
+        tmpfiles+=("$tmp")
 
-        # Query remote directly — no local repo access needed
-        local remote=""
-        remote=$(git ls-remote "$origin_url" HEAD 2>/dev/null | awk '{print $1; exit}')
+        (
+            if [[ -z "$origin_url" ]]; then
+                printf '%-28s ? %s (no URL recorded)\n' "$name" "${commit:0:12}"
+            else
+                local remote=""
+                remote=$(timeout "$LSREMOTE_TIMEOUT" git ls-remote "$origin_url" HEAD 2>/dev/null | awk '{print $1; exit}')
+                if [[ -z "$remote" ]]; then
+                    printf '%-28s ? %s (fetch failed)\n' "$name" "${commit:0:12}"
+                elif [[ "$commit" == "$remote" ]]; then
+                    printf '%-28s ok %s\n' "$name" "${commit:0:12}"
+                else
+                    printf '%-28s >> %s -> %s\n' "$name" "${commit:0:12}" "${remote:0:12}"
+                fi
+            fi
+        ) > "$tmp" &
+        pids+=($!)
+        running=$((running + 1))
 
-        if [[ -z "$remote" ]]; then
-            printf "%-28s ? %s (fetch failed)\n" "$name" "${commit:0:12}"
-        elif [[ "$commit" == "$remote" ]]; then
-            printf "%-28s ✓ %s\n" "$name" "${commit:0:12}"
-        else
-            printf "%-28s ⬆ %s → %s\n" "$name" "${commit:0:12}" "${remote:0:12}"
+        if [[ $running -ge $MAX_STATUS_PARALLEL ]]; then
+            wait "${pids[0]}" 2>/dev/null || true
+            cat "${tmpfiles[0]}"
+            pids=("${pids[@]:1}")
+            tmpfiles=("${tmpfiles[@]:1}")
+            running=$((running - 1))
         fi
     done
+
+    local i
+    for i in "${!pids[@]}"; do
+        wait "${pids[$i]}" 2>/dev/null || true
+        cat "${tmpfiles[$i]}"
+    done
+
+    rm -rf "$STATUS_TMPDIR"
+    STATUS_TMPDIR=""
+
     [[ $found -eq 1 ]] || echo "No packages installed."
 }
 
@@ -672,18 +954,27 @@ cmd_files() {
     [[ -f "$filelist" ]] || die "${name} is not installed"
 
     while IFS= read -r f; do
-        if [[ -f "/${f}" ]]; then
-            echo "/${f}"
+        [[ -z "$f" ]] && continue
+        if [[ -L "/${f}" ]]; then
+            printf '/%s -> %s\n' "$f" "$(readlink "/${f}")"
+        elif [[ -f "/${f}" ]]; then
+            printf '/%s\n' "$f"
         else
-            echo "/${f}  (missing)"
+            printf '/%s  (missing)\n' "$f"
         fi
     done < "$filelist"
 }
 
 cmd_verify() {
     local fix="$1"
+    local name="${2:-}"
     [[ $EUID -eq 0 ]] || die "must run as root"
-    _verify_permissions "$fix"
+
+    if [[ -n "$name" ]]; then
+        _verify_package "$name"
+    else
+        _verify_permissions "$fix"
+    fi
 }
 
 # ── Repository commands ───────────────────────────────────
@@ -699,18 +990,16 @@ cmd_repo_add() {
 
     _ensure_conf
 
-    # Check repos.conf
     if grep -qxF "$url" "$REPOS_CONF" 2>/dev/null; then
         die "repository already added: ${url}"
     fi
 
-    # Check mirrorlist
     if [[ -f "$MIRRORLIST" ]] && grep -qxF "$url" "$MIRRORLIST" 2>/dev/null; then
         die "repository already exists in mirrorlist: ${url}"
     fi
 
     echo "$url" >> "$REPOS_CONF"
-    echo "Added repository: ${url}"
+    printf 'Added repository: %s\n' "$url"
 }
 
 cmd_repo_del() {
@@ -726,12 +1015,11 @@ cmd_repo_del() {
         die "repository not found: ${url}"
     fi
 
-    local tmpf
-    tmpf=$(mktemp)
-    grep -vxF "$url" "$REPOS_CONF" > "$tmpf" || true
-    mv "$tmpf" "$REPOS_CONF"
+    local content
+    content=$(grep -vxF "$url" "$REPOS_CONF" || true)
+    printf '%s\n' "$content" > "$REPOS_CONF"
 
-    echo "Removed repository: ${url}"
+    printf 'Removed repository: %s\n' "$url"
 }
 
 cmd_repo_list() {
@@ -740,7 +1028,7 @@ cmd_repo_list() {
 
     if [[ -f "$REPOS_CONF" ]]; then
         if [[ ! -r "$REPOS_CONF" ]]; then
-            echo "WARN: ${REPOS_CONF} is not readable (run as root or fix permissions)" >&2
+            printf 'WARN: %s is not readable\n' "$REPOS_CONF" >&2
         else
             while IFS= read -r url; do
                 [[ -z "$url" || "$url" == \#* ]] && continue
@@ -748,14 +1036,14 @@ cmd_repo_list() {
                 [[ -n "${seen[$url]:-}" ]] && continue
                 seen[$url]=1
                 found=1
-                printf "%-60s [repo]\n" "$url"
+                printf '%-60s [repo]\n' "$url"
             done < "$REPOS_CONF"
         fi
     fi
 
     if [[ -f "$MIRRORLIST" ]]; then
         if [[ ! -r "$MIRRORLIST" ]]; then
-            echo "WARN: ${MIRRORLIST} is not readable" >&2
+            printf 'WARN: %s is not readable\n' "$MIRRORLIST" >&2
         else
             while IFS= read -r url; do
                 [[ -z "$url" || "$url" == \#* ]] && continue
@@ -763,7 +1051,7 @@ cmd_repo_list() {
                 [[ -n "${seen[$url]:-}" ]] && continue
                 seen[$url]=1
                 found=1
-                printf "%-60s [mirror]\n" "$url"
+                printf '%-60s [mirror]\n' "$url"
             done < "$MIRRORLIST"
         fi
     fi
@@ -776,24 +1064,22 @@ cmd_search() {
     [[ -n "$query" ]] || die "usage: gitpkg search <query>"
 
     if [[ ! -f "$PKGLIST" ]]; then
-        echo "No pkglist found. Install or create ${PKGLIST}."
+        printf 'No pkglist found. Install or create %s.\n' "$PKGLIST"
         return
     fi
 
-    if [[ ! -r "$PKGLIST" ]]; then
-        die "${PKGLIST} is not readable"
-    fi
+    [[ -r "$PKGLIST" ]] || die "${PKGLIST} is not readable"
 
     local found=0
     while IFS='|' read -r pname pdesc; do
         [[ -z "$pname" || "$pname" == \#* ]] && continue
-        if echo "${pname} ${pdesc}" | grep -qi "$query"; then
+        if printf '%s %s' "$pname" "$pdesc" | grep -qi -- "$query"; then
             found=1
-            printf "%-28s %s\n" "$pname" "$pdesc"
+            printf '%-28s %s\n' "$pname" "$pdesc"
         fi
     done < "$PKGLIST"
 
-    [[ $found -eq 1 ]] || echo "No packages matching '${query}'."
+    [[ $found -eq 1 ]] || printf 'No packages matching %s.\n' "'${query}'"
 }
 
 # ── Entry point ───────────────────────────────────────────
@@ -826,14 +1112,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$COMMAND" in
-    install)   cmd_install "$DRY_RUN" "$SKIP_INSPECT" "${ARGS[@]}" ;;
+    install)   cmd_install "$DRY_RUN" "$SKIP_INSPECT" ${ARGS[@]+"${ARGS[@]}"} ;;
     update)    cmd_update "$DRY_RUN" "$SKIP_INSPECT" "${ARGS[0]:-}" ;;
     remove)    cmd_remove "$DRY_RUN" "$YES" "${ARGS[0]:-}" ;;
     list)      cmd_list ;;
     status)    cmd_status ;;
     files)     cmd_files "${ARGS[0]:-}" ;;
     inspect)   cmd_inspect "${ARGS[0]:-}" "${ARGS[1]:-}" ;;
-    verify)    cmd_verify "$FIX" ;;
+    verify)    cmd_verify "$FIX" "${ARGS[0]:-}" ;;
     repo-add)  cmd_repo_add "${ARGS[0]:-}" ;;
     repo-del)  cmd_repo_del "${ARGS[0]:-}" ;;
     repo-list) cmd_repo_list ;;
