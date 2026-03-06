@@ -1,0 +1,6 @@
+# /etc/gitpkg/mirrorlist — default package sources
+# Each line is a base URL (user/org level)
+# Package clone URL = base_url/package_name
+# For custom sources use: gitpkg repo-add <base_url>
+https://gitlab.com/fkzys
+https://github.com/rpPH4kQocMjkm2Ve

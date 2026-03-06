@@ -1,0 +1,814 @@
+#!/bin/bash
+# gitpkg — minimal package manager for git + make projects
+#
+# Tracks installed files via DESTDIR staging.
+# Resolves packages from configured base URLs (repo-agnostic).
+
+set -euo pipefail
+
+readonly VERSION="0.4.0"
+readonly DBDIR="/var/lib/gitpkg"
+readonly SRCDIR="/var/cache/gitpkg"
+readonly LOCK_FILE="/var/lock/gitpkg.lock"
+readonly CONFDIR="/etc/gitpkg"
+readonly REPOS_CONF="${CONFDIR}/repos.conf"
+readonly MIRRORLIST="${CONFDIR}/mirrorlist"
+readonly PKGLIST="${CONFDIR}/pkglist"
+
+readonly -a PROTECTED_DIRS=(
+    /usr /usr/bin /usr/lib /usr/share /usr/local /usr/local/bin
+    /usr/share/applications /usr/share/licenses
+    /usr/share/zsh /usr/share/zsh/site-functions
+    /usr/share/bash-completion /usr/share/bash-completion/completions
+    /etc
+)
+
+readonly -A EXPECTED_PERMS=(
+    [/]=755
+    [/usr]=755
+    [/usr/bin]=755
+    [/usr/lib]=755
+    [/usr/share]=755
+    [/etc]=755
+    [/var]=755
+    [/tmp]=1777
+    [/run]=755
+)
+
+# ── Output helpers ────────────────────────────────────────
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# ── Help ──────────────────────────────────────────────────
+
+show_help() {
+    cat << EOF
+gitpkg v${VERSION} — git + make package manager
+
+Usage: gitpkg <command> [options] [args]
+
+Commands:
+    install  <name> [url] [fallback-url]  Clone, build, install
+    update   [name]                       Update one or all packages
+    remove   <name>                       Uninstall and remove source
+    list                                  List installed packages
+    status                                Check for upstream updates
+    files    <name>                       List tracked files
+    inspect  <name> [url]                 Show Makefile before installing
+    verify                                Check system directory permissions
+    repo-add  <base_url>                  Add a package source
+    repo-del  <base_url>                  Remove a package source
+    repo-list                             List configured sources
+    search    <query>                     Search known packages
+
+Options:
+    -n, --dry-run    Show what would be done (install, update, remove)
+    -y, --yes        Skip confirmation (remove)
+    --fix            Auto-repair permission anomalies (verify)
+    --skip-inspect   Skip Makefile review (install)
+    -h, --help       Show this help
+    -V, --version    Show version
+
+Security:
+    Always review the Makefile before installing. gitpkg will show
+    it automatically during install, or use 'inspect' to view it
+    without installing.
+
+EOF
+    exit 0
+}
+
+# ── Locking ───────────────────────────────────────────────
+
+LOCK_ACQUIRED=0
+
+acquire_lock() {
+    local lock_dir
+    lock_dir=$(dirname "$LOCK_FILE")
+    [[ -d "$lock_dir" ]] || mkdir -p "$lock_dir"
+
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        die "another gitpkg operation is running"
+    fi
+    LOCK_ACQUIRED=1
+}
+
+# ── Cleanup ───────────────────────────────────────────────
+
+STAGE_DIR=""
+BUILD_OVERLAY=""
+
+cleanup() {
+    set +e
+    [[ -n "$BUILD_OVERLAY" && -d "$BUILD_OVERLAY" ]] && rm -rf "$BUILD_OVERLAY"
+    [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" ]] && rm -rf "$STAGE_DIR"
+    if [[ "$LOCK_ACQUIRED" -eq 1 ]]; then
+        flock -u 9 2>/dev/null
+        exec 9>&- 2>/dev/null
+        rm -f "$LOCK_FILE"
+        LOCK_ACQUIRED=0
+    fi
+}
+
+trap cleanup EXIT
+trap 'exit 1' TERM INT HUP
+
+# ── Internal helpers ──────────────────────────────────────
+
+is_protected_dir() {
+    local dir="$1" p
+    for p in "${PROTECTED_DIRS[@]}"; do
+        [[ "$dir" == "$p" ]] && return 0
+    done
+    return 1
+}
+
+# Emit candidate clone URLs for a package name.
+# Reads repos.conf first (user sources), then mirrorlist (shipped defaults).
+_resolve_urls() {
+    local name="$1"
+    local conf base
+    for conf in "$REPOS_CONF" "$MIRRORLIST"; do
+        [[ -f "$conf" && -r "$conf" ]] || continue
+        while IFS= read -r base; do
+            [[ -z "$base" || "$base" == \#* ]] && continue
+            echo "${base%/}/${name}"
+        done < "$conf"
+    done | _dedup_urls
+}
+
+# Filter: deduplicate non-empty lines (stdin → stdout).
+_dedup_urls() {
+    awk 'NF && !seen[$0]++'
+}
+
+_ensure_conf() {
+    [[ -d "$CONFDIR" ]] || mkdir -p "$CONFDIR"
+    if [[ ! -f "$REPOS_CONF" ]]; then
+        touch "$REPOS_CONF"
+        chmod 644 "$REPOS_CONF"
+    fi
+}
+
+# ── Verify permissions ────────────────────────────────────
+
+_verify_permissions() {
+    local fix="${1:-0}"
+    local bad=0
+
+    echo ":: Verifying directory permissions..."
+    for d in "${!EXPECTED_PERMS[@]}"; do
+        [[ -d "$d" ]] || continue
+        local mode expected
+        mode=$(stat -c '%a' "$d")
+        expected="${EXPECTED_PERMS[$d]}"
+        if [[ "$mode" != "$expected" ]]; then
+            if [[ "$fix" -eq 1 ]]; then
+                echo "   WARN: ${d} has mode ${mode}, expected ${expected} — fixing!"
+                chmod "$expected" "$d"
+            else
+                echo "   WARN: ${d} has mode ${mode}, expected ${expected}"
+            fi
+            bad=1
+        else
+            echo "   OK: ${d} ${mode}"
+        fi
+    done
+
+    if [[ "$bad" -eq 1 && "$fix" -eq 0 ]]; then
+        echo ":: Permission anomalies detected. Run 'gitpkg verify --fix' to repair."
+    elif [[ "$bad" -eq 1 && "$fix" -eq 1 ]]; then
+        echo ":: Permission anomalies were repaired."
+    fi
+
+    return "$bad"
+}
+
+# ── Clone ─────────────────────────────────────────────────
+
+# Global: set by _clone to the URL that succeeded.
+CLONE_SUCCESS_URL=""
+
+# Try each URL in order until one succeeds.
+# Usage: _clone <name> <url1> [url2] [url3] ...
+_clone() {
+    local name="$1"; shift
+    local -a urls=("$@")
+    local srcdir="${SRCDIR}/${name}"
+    CLONE_SUCCESS_URL=""
+
+    # Clean stale cache (source exists but package not registered)
+    if [[ -d "$srcdir" && ! -d "${DBDIR}/${name}" ]]; then
+        echo ":: Cleaning stale source cache for ${name}..."
+        rm -rf "$srcdir"
+    fi
+
+    [[ -d "$srcdir" ]] && die "${name}: source already exists at ${srcdir}"
+
+    local url
+    for url in "${urls[@]}"; do
+        echo -n ":: Cloning ${url} ... "
+        if git clone --filter=blob:none "$url" "$srcdir" &>/dev/null; then
+            echo "ok"
+            CLONE_SUCCESS_URL="$url"
+            return 0
+        fi
+        echo "fail"
+        rm -rf "$srcdir"
+    done
+
+    die "failed to clone ${name}"
+}
+
+# ── Stage & Deploy ────────────────────────────────────────
+
+_stage_and_deploy() {
+    local name="$1" dry_run="${2:-0}"
+    local srcdir="${SRCDIR}/${name}"
+    local dbdir="${DBDIR}/${name}"
+
+    STAGE_DIR=$(mktemp -d /tmp/gitpkg-stage.XXXXXX)
+
+    echo ":: Building ${name}..."
+    BUILD_OVERLAY=$(mktemp -d /tmp/gitpkg-build.XXXXXX)
+    cp -a "${srcdir}/." "$BUILD_OVERLAY"
+    chown -R nobody:nobody "$BUILD_OVERLAY"
+
+    if ! runuser -u nobody -- make -C "$BUILD_OVERLAY" build 2>/dev/null; then
+        true
+    fi
+
+    echo ":: Staging ${name}..."
+    make -C "$BUILD_OVERLAY" install DESTDIR="$STAGE_DIR"
+
+    rm -rf "$BUILD_OVERLAY"
+    BUILD_OVERLAY=""
+
+    mkdir -p "$dbdir"
+    find "$STAGE_DIR" -not -type d -printf '%P\n' | sort > "${dbdir}/files"
+
+    local file_count
+    file_count=$(wc -l < "${dbdir}/files")
+    if [[ "$file_count" -eq 0 ]]; then
+        rm -rf "$STAGE_DIR"
+        STAGE_DIR=""
+        die "make install produced no files"
+    fi
+
+    if [[ "$dry_run" -eq 1 ]]; then
+        echo ":: Would deploy ${file_count} files:"
+        while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            if [[ -f "/${f}" ]]; then
+                echo "   /${f}  (overwrite)"
+            else
+                echo "   /${f}"
+            fi
+        done < "${dbdir}/files"
+        rm -rf "$STAGE_DIR" "$dbdir"
+        STAGE_DIR=""
+        return 1
+    fi
+
+    echo ":: Deploying ${name} (${file_count} files)..."
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        local dest="/${f}"
+        local destdir
+        destdir=$(dirname "$dest")
+        [[ -d "$destdir" ]] || install -d -m755 "$destdir"
+        cp -a "${STAGE_DIR}/${f}" "$dest"
+    done < "${dbdir}/files"
+
+    rm -rf "$STAGE_DIR"
+    STAGE_DIR=""
+
+    git -C "$srcdir" rev-parse HEAD > "${dbdir}/commit"
+
+    _verify_permissions 0 || true
+}
+
+# ── Remove tracked files ─────────────────────────────────
+
+_remove_tracked() {
+    local name="$1"
+    local filelist="${DBDIR}/${name}/files"
+    [[ -f "$filelist" ]] || return 0
+
+    local removed=0
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        if [[ -f "/${f}" ]]; then
+            rm -f "/${f}"
+            removed=$((removed + 1))
+        fi
+    done < "$filelist"
+
+    awk -F/ '{
+        for (i = NF; i > 1; i--) {
+            s = ""
+            for (j = 1; j < i; j++) s = s "/" $j
+            if (s != "") print s
+        }
+    }' "$filelist" | sort -ru | while IFS= read -r d; do
+        [[ -z "$d" ]] && continue
+        is_protected_dir "$d" && continue
+        rmdir "$d" 2>/dev/null || true
+    done
+
+    echo "   Removed ${removed} file(s)"
+}
+
+# ── Inspect Makefile ──────────────────────────────────────
+
+# Display a Makefile. Uses $PAGER, falls back to less, then cat.
+_show_makefile() {
+    local makefile="$1"
+
+    if [[ ! -f "$makefile" ]]; then
+        die "no Makefile found"
+    fi
+
+    echo "── Makefile ────────────────────────────────────────────────"
+    if [[ -t 1 ]]; then
+        # Interactive terminal — use pager
+        ${PAGER:-less} "$makefile"
+    else
+        cat "$makefile"
+    fi
+    echo "────────────────────────────────────────────────────────────"
+}
+
+cmd_inspect() {
+    local name="${1:-}"
+    local url="${2:-}"
+
+    [[ -n "$name" ]] || die "usage: gitpkg inspect <name> [url]"
+
+    local srcdir="${SRCDIR}/${name}"
+
+    # Case 1: already installed / source cached
+    if [[ -d "$srcdir" ]]; then
+        if [[ ! -r "${srcdir}/Makefile" ]]; then
+            # Try as root hint
+            die "${srcdir}/Makefile is not readable (try with sudo)"
+        fi
+        _show_makefile "${srcdir}/Makefile"
+        return
+    fi
+
+    # Case 2: clone to temp, show, cleanup
+    local -a clone_urls=()
+    if [[ -n "$url" ]]; then
+        clone_urls+=("$url")
+    else
+        mapfile -t clone_urls < <(_resolve_urls "$name")
+        [[ ${#clone_urls[@]} -gt 0 ]] || \
+            die "no sources for '${name}'. Specify URL or run 'gitpkg repo-add <base_url>'."
+    fi
+
+    local tmpdir
+    tmpdir=$(mktemp -d /tmp/gitpkg-inspect.XXXXXX)
+
+    local cloned=0 u
+    for u in "${clone_urls[@]}"; do
+        echo -n ":: Fetching ${u} ... "
+        if git clone --filter=blob:none --depth=1 "$u" "$tmpdir/repo" &>/dev/null; then
+            echo "ok"
+            cloned=1
+            break
+        fi
+        echo "fail"
+    done
+
+    if [[ $cloned -eq 0 ]]; then
+        rm -rf "$tmpdir"
+        die "failed to fetch ${name}"
+    fi
+
+    if [[ ! -f "${tmpdir}/repo/Makefile" ]]; then
+        rm -rf "$tmpdir"
+        die "no Makefile found in ${name}"
+    fi
+
+    _show_makefile "${tmpdir}/repo/Makefile"
+    rm -rf "$tmpdir"
+}
+
+# ── Commands ──────────────────────────────────────────────
+
+cmd_install() {
+    local dry_run="$1"; shift
+    local skip_inspect="$1"; shift
+    local name="${1:-}"
+    local primary="${2:-}"
+    local fallback="${3:-}"
+
+    [[ -n "$name" ]] || die "usage: gitpkg install <name> [url] [fallback-url]"
+    [[ $EUID -eq 0 ]] || die "must run as root"
+
+    local dbdir="${DBDIR}/${name}"
+    [[ -d "$dbdir" ]] && die "${name} is already installed (use 'update')"
+
+    local -a clone_urls=()
+    if [[ -n "$primary" ]]; then
+        clone_urls+=("$primary")
+        [[ -n "$fallback" ]] && clone_urls+=("$fallback")
+    else
+        mapfile -t clone_urls < <(_resolve_urls "$name")
+        [[ ${#clone_urls[@]} -gt 0 ]] || \
+            die "no sources for '${name}'. Specify URL or run 'gitpkg repo-add <base_url>'."
+    fi
+
+    acquire_lock
+    _clone "$name" "${clone_urls[@]}"
+
+    local srcdir="${SRCDIR}/${name}"
+
+    if [[ ! -f "${srcdir}/Makefile" ]]; then
+        rm -rf "$srcdir"
+        die "no Makefile found in ${name}"
+    fi
+
+    if [[ "$skip_inspect" -eq 0 && "$dry_run" -eq 0 ]]; then
+        echo ""
+        echo "── Makefile for ${name} ─────────────────────────────────"
+        cat "${srcdir}/Makefile"
+        echo "────────────────────────────────────────────────────────────"
+        echo ""
+        read -rp ":: Proceed with install? [y/N] " answer
+        if [[ ! "$answer" =~ ^[Yy] ]]; then
+            rm -rf "$srcdir"
+            echo ":: Aborted."
+            exit 0
+        fi
+    fi
+
+    if _stage_and_deploy "$name" "$dry_run"; then
+        {
+            echo "$CLONE_SUCCESS_URL"
+            for u in "${clone_urls[@]}"; do
+                [[ "$u" != "$CLONE_SUCCESS_URL" ]] && echo "$u"
+            done
+        } > "${dbdir}/urls"
+
+        local commit
+        commit=$(<"${dbdir}/commit")
+        echo ":: Installed ${name} [${commit:0:8}]"
+    else
+        rm -rf "${SRCDIR}/${name}"
+        echo ":: Dry run complete — nothing was installed."
+    fi
+}
+
+cmd_update() {
+    [[ $EUID -eq 0 ]] || die "must run as root"
+    acquire_lock
+
+    local dry_run="$1"; shift
+    local name="${1:-}"
+
+    if [[ -z "$name" ]]; then
+        local found=0
+        for d in "${DBDIR}"/*/; do
+            [[ -d "$d" ]] || continue
+            found=1
+            _update_single "$(basename "$d")" "$dry_run"
+        done
+        [[ $found -eq 1 ]] || echo "No packages installed."
+        return
+    fi
+
+    _update_single "$name" "$dry_run"
+}
+
+_update_single() {
+    local name="$1"
+    local dry_run="${2:-0}"
+    local srcdir="${SRCDIR}/${name}"
+    local dbdir="${DBDIR}/${name}"
+
+    [[ -d "$dbdir" ]] || die "${name} is not installed"
+
+    local old_commit
+    old_commit=$(<"${dbdir}/commit")
+
+    # Re-clone if source cache is missing
+    if [[ ! -d "$srcdir" ]]; then
+        echo ":: Source cache missing for ${name}, re-cloning..."
+        local -a reclone_urls=()
+        mapfile -t reclone_urls < <({
+            [[ -f "${dbdir}/urls" ]] && cat "${dbdir}/urls"
+            _resolve_urls "$name"
+        } | _dedup_urls)
+        [[ ${#reclone_urls[@]} -gt 0 ]] || die "no URL recorded for ${name}"
+        _clone "$name" "${reclone_urls[@]}"
+    fi
+
+    local branch
+    branch=$(git -C "$srcdir" rev-parse --abbrev-ref HEAD)
+
+    echo ":: Fetching ${name}..."
+    if ! git -C "$srcdir" fetch origin "$branch" &>/dev/null; then
+        echo ":: Primary fetch failed, trying fallbacks..."
+        local fetched=0
+        local -a fb_urls=()
+        mapfile -t fb_urls < <({
+            [[ -f "${dbdir}/urls" ]] && tail -n +2 "${dbdir}/urls"
+            _resolve_urls "$name"
+        } | _dedup_urls)
+
+        local u
+        for u in "${fb_urls[@]}"; do
+            echo -n ":: Trying ${u} ... "
+            git -C "$srcdir" remote set-url origin "$u"
+            if git -C "$srcdir" fetch origin "$branch" &>/dev/null; then
+                echo "ok"
+                fetched=1
+                break
+            fi
+            echo "fail"
+        done
+
+        [[ $fetched -eq 1 ]] || die "fetch failed for ${name}"
+    fi
+
+    local new_commit
+    new_commit=$(git -C "$srcdir" rev-parse "origin/${branch}")
+
+    if [[ "$old_commit" == "$new_commit" ]]; then
+        echo "${name}: up to date [${old_commit:0:8}]"
+        return
+    fi
+
+    if [[ "$dry_run" -eq 1 ]]; then
+        echo ":: Would update ${name} [${old_commit:0:8} → ${new_commit:0:8}]"
+        return
+    fi
+
+    echo ":: Updating ${name} [${old_commit:0:8} → ${new_commit:0:8}]..."
+    git -C "$srcdir" reset --hard "origin/${branch}"
+
+    _remove_tracked "$name"
+    _stage_and_deploy "$name" 0
+
+    echo ":: Updated ${name}"
+}
+
+cmd_remove() {
+    local dry_run="$1"; shift
+    local yes="$1"; shift
+    local name="${1:-}"
+
+    [[ -n "$name" ]]          || die "usage: gitpkg remove <name>"
+    [[ $EUID -eq 0 ]]         || die "must run as root"
+    [[ -d "${DBDIR}/${name}" ]] || die "${name} is not installed"
+
+    acquire_lock
+
+    if [[ "$dry_run" -eq 1 ]]; then
+        echo ":: Would remove ${name}:"
+        local filelist="${DBDIR}/${name}/files"
+        [[ -f "$filelist" ]] && sed 's|^|   /|' "$filelist"
+        return
+    fi
+
+    if [[ "$yes" -eq 0 ]]; then
+        local file_count=0
+        [[ -f "${DBDIR}/${name}/files" ]] && file_count=$(wc -l < "${DBDIR}/${name}/files")
+        echo "Will remove ${name} (${file_count} files)"
+        read -rp "Continue? [y/N] " answer
+        [[ "$answer" =~ ^[Yy] ]] || { echo "Aborted."; exit 0; }
+    fi
+
+    echo ":: Removing ${name}..."
+    _remove_tracked "$name"
+    rm -rf "${DBDIR}/${name}" "${SRCDIR}/${name}"
+    echo ":: Removed ${name}"
+}
+
+cmd_list() {
+    local found=0
+    for d in "${DBDIR}"/*/; do
+        [[ -d "$d" ]] || continue
+        found=1
+        local name commit
+        name=$(basename "$d")
+        commit=$(<"${d}commit")
+        printf "  %-28s %s\n" "$name" "${commit:0:12}"
+    done
+    [[ $found -eq 1 ]] || echo "No packages installed."
+}
+
+cmd_status() {
+    local found=0
+    for d in "${DBDIR}"/*/; do
+        [[ -d "$d" ]] || continue
+        found=1
+        local name commit
+        name=$(basename "$d")
+        commit=$(<"${d}commit")
+
+        # Read URL from dbdir (always readable), not from source tree
+        local origin_url=""
+        [[ -f "${d}urls" ]] && origin_url=$(head -n1 "${d}urls" 2>/dev/null || true)
+
+        if [[ -z "$origin_url" ]]; then
+            printf "  %-28s ? %s (no URL recorded)\n" "$name" "${commit:0:12}"
+            continue
+        fi
+
+        # Query remote directly — no local repo access needed
+        local remote=""
+        remote=$(git ls-remote "$origin_url" HEAD 2>/dev/null | awk '{print $1; exit}')
+
+        if [[ -z "$remote" ]]; then
+            printf "  %-28s ? %s (fetch failed)\n" "$name" "${commit:0:12}"
+        elif [[ "$commit" == "$remote" ]]; then
+            printf "  %-28s ✓ %s\n" "$name" "${commit:0:12}"
+        else
+            printf "  %-28s ⬆ %s → %s\n" "$name" "${commit:0:12}" "${remote:0:12}"
+        fi
+    done
+    [[ $found -eq 1 ]] || echo "No packages installed."
+}
+
+cmd_files() {
+    local name="${1:-}"
+    [[ -n "$name" ]] || die "usage: gitpkg files <name>"
+
+    local filelist="${DBDIR}/${name}/files"
+    [[ -f "$filelist" ]] || die "${name} is not installed"
+
+    while IFS= read -r f; do
+        if [[ -f "/${f}" ]]; then
+            echo "  /${f}"
+        else
+            echo "  /${f}  (missing)"
+        fi
+    done < "$filelist"
+}
+
+cmd_verify() {
+    local fix="$1"
+    [[ $EUID -eq 0 ]] || die "must run as root"
+    _verify_permissions "$fix"
+}
+
+# ── Repository commands ───────────────────────────────────
+
+cmd_repo_add() {
+    local url="${1:-}"
+    [[ -n "$url" ]] || die "usage: gitpkg repo-add <base_url>"
+    [[ $EUID -eq 0 ]] || die "must run as root"
+
+    [[ "$url" =~ ^https?:// ]] || die "invalid URL: ${url}"
+
+    url="${url%/}"
+
+    _ensure_conf
+
+    # Check repos.conf
+    if grep -qxF "$url" "$REPOS_CONF" 2>/dev/null; then
+        die "repository already added: ${url}"
+    fi
+
+    # Check mirrorlist
+    if [[ -f "$MIRRORLIST" ]] && grep -qxF "$url" "$MIRRORLIST" 2>/dev/null; then
+        die "repository already exists in mirrorlist: ${url}"
+    fi
+
+    echo "$url" >> "$REPOS_CONF"
+    echo ":: Added repository: ${url}"
+}
+
+cmd_repo_del() {
+    local url="${1:-}"
+    [[ -n "$url" ]] || die "usage: gitpkg repo-del <base_url>"
+    [[ $EUID -eq 0 ]] || die "must run as root"
+
+    url="${url%/}"
+
+    _ensure_conf
+
+    if ! grep -qxF "$url" "$REPOS_CONF" 2>/dev/null; then
+        die "repository not found: ${url}"
+    fi
+
+    local tmpf
+    tmpf=$(mktemp)
+    grep -vxF "$url" "$REPOS_CONF" > "$tmpf" || true
+    mv "$tmpf" "$REPOS_CONF"
+
+    echo ":: Removed repository: ${url}"
+}
+
+cmd_repo_list() {
+    local found=0
+    local -A seen=()
+
+    if [[ -f "$REPOS_CONF" ]]; then
+        if [[ ! -r "$REPOS_CONF" ]]; then
+            echo "  WARN: ${REPOS_CONF} is not readable (run as root or fix permissions)" >&2
+        else
+            while IFS= read -r url; do
+                [[ -z "$url" || "$url" == \#* ]] && continue
+                url="${url%/}"
+                [[ -n "${seen[$url]:-}" ]] && continue
+                seen[$url]=1
+                found=1
+                printf "  %-60s [repo]\n" "$url"
+            done < "$REPOS_CONF"
+        fi
+    fi
+
+    if [[ -f "$MIRRORLIST" ]]; then
+        if [[ ! -r "$MIRRORLIST" ]]; then
+            echo "  WARN: ${MIRRORLIST} is not readable" >&2
+        else
+            while IFS= read -r url; do
+                [[ -z "$url" || "$url" == \#* ]] && continue
+                url="${url%/}"
+                [[ -n "${seen[$url]:-}" ]] && continue
+                seen[$url]=1
+                found=1
+                printf "  %-60s [mirror]\n" "$url"
+            done < "$MIRRORLIST"
+        fi
+    fi
+
+    [[ $found -eq 1 ]] || echo "No sources configured. Use 'gitpkg repo-add <base_url>'."
+}
+
+cmd_search() {
+    local query="${1:-}"
+    [[ -n "$query" ]] || die "usage: gitpkg search <query>"
+
+    if [[ ! -f "$PKGLIST" ]]; then
+        echo "No pkglist found. Install or create ${PKGLIST}."
+        return
+    fi
+
+    if [[ ! -r "$PKGLIST" ]]; then
+        die "${PKGLIST} is not readable"
+    fi
+
+    local found=0
+    while IFS='|' read -r pname pdesc; do
+        [[ -z "$pname" || "$pname" == \#* ]] && continue
+        if echo "${pname} ${pdesc}" | grep -qi "$query"; then
+            found=1
+            local mark=" "
+            [[ -d "${DBDIR}/${pname}" ]] && mark="✓"
+            printf "  %s %-24s %s\n" "$mark" "$pname" "$pdesc"
+        fi
+    done < "$PKGLIST"
+
+    [[ $found -eq 1 ]] || echo "No packages matching '${query}'."
+}
+
+# ── Entry point ───────────────────────────────────────────
+
+case "${1:-}" in
+    -h|--help)    show_help ;;
+    -V|--version) echo "gitpkg v${VERSION}"; exit 0 ;;
+esac
+
+COMMAND="${1:-}"
+[[ -n "$COMMAND" ]] || show_help
+shift
+
+DRY_RUN=0
+YES=0
+FIX=0
+SKIP_INSPECT=0
+ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -n|--dry-run)    DRY_RUN=1; shift ;;
+        -y|--yes)        YES=1; shift ;;
+        --fix)           FIX=1; shift ;;
+        --skip-inspect)  SKIP_INSPECT=1; shift ;;
+        -h|--help)       show_help ;;
+        -*)              die "unknown option: $1" ;;
+        *)               ARGS+=("$1"); shift ;;
+    esac
+done
+
+case "$COMMAND" in
+    install)   cmd_install "$DRY_RUN" "$SKIP_INSPECT" "${ARGS[@]:-}" ;;
+    update)    cmd_update "$DRY_RUN" "${ARGS[0]:-}" ;;
+    remove)    cmd_remove "$DRY_RUN" "$YES" "${ARGS[0]:-}" ;;
+    list)      cmd_list ;;
+    status)    cmd_status ;;
+    files)     cmd_files "${ARGS[0]:-}" ;;
+    inspect)   cmd_inspect "${ARGS[0]:-}" "${ARGS[1]:-}" ;;
+    verify)    cmd_verify "$FIX" ;;
+    repo-add)  cmd_repo_add "${ARGS[0]:-}" ;;
+    repo-del)  cmd_repo_del "${ARGS[0]:-}" ;;
+    repo-list) cmd_repo_list ;;
+    search)    cmd_search "${ARGS[0]:-}" ;;
+    *)         die "unknown command: $COMMAND" ;;
+esac
