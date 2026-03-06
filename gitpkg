@@ -599,7 +599,7 @@ cmd_remove() {
     if [[ "$dry_run" -eq 1 ]]; then
         echo ":: Would remove ${name}:"
         local filelist="${DBDIR}/${name}/files"
-        [[ -f "$filelist" ]] && sed 's|^|   /|' "$filelist"
+        [[ -f "$filelist" ]] && sed 's|^|/|' "$filelist"
         return
     fi
 
@@ -625,7 +625,7 @@ cmd_list() {
         local name commit
         name=$(basename "$d")
         commit=$(<"${d}commit")
-        printf "  %-28s %s\n" "$name" "${commit:0:12}"
+        printf "%-28s %s\n" "$name" "${commit:0:12}"
     done
     [[ $found -eq 1 ]] || echo "No packages installed."
 }
@@ -644,7 +644,7 @@ cmd_status() {
         [[ -f "${d}urls" ]] && origin_url=$(head -n1 "${d}urls" 2>/dev/null || true)
 
         if [[ -z "$origin_url" ]]; then
-            printf "  %-28s ? %s (no URL recorded)\n" "$name" "${commit:0:12}"
+            printf "%-28s ? %s (no URL recorded)\n" "$name" "${commit:0:12}"
             continue
         fi
 
@@ -653,11 +653,11 @@ cmd_status() {
         remote=$(git ls-remote "$origin_url" HEAD 2>/dev/null | awk '{print $1; exit}')
 
         if [[ -z "$remote" ]]; then
-            printf "  %-28s ? %s (fetch failed)\n" "$name" "${commit:0:12}"
+            printf "%-28s ? %s (fetch failed)\n" "$name" "${commit:0:12}"
         elif [[ "$commit" == "$remote" ]]; then
-            printf "  %-28s ✓ %s\n" "$name" "${commit:0:12}"
+            printf "%-28s ✓ %s\n" "$name" "${commit:0:12}"
         else
-            printf "  %-28s ⬆ %s → %s\n" "$name" "${commit:0:12}" "${remote:0:12}"
+            printf "%-28s ⬆ %s → %s\n" "$name" "${commit:0:12}" "${remote:0:12}"
         fi
     done
     [[ $found -eq 1 ]] || echo "No packages installed."
@@ -672,9 +672,9 @@ cmd_files() {
 
     while IFS= read -r f; do
         if [[ -f "/${f}" ]]; then
-            echo "  /${f}"
+            echo "/${f}"
         else
-            echo "  /${f}  (missing)"
+            echo "/${f}  (missing)"
         fi
     done < "$filelist"
 }
@@ -739,7 +739,7 @@ cmd_repo_list() {
 
     if [[ -f "$REPOS_CONF" ]]; then
         if [[ ! -r "$REPOS_CONF" ]]; then
-            echo "  WARN: ${REPOS_CONF} is not readable (run as root or fix permissions)" >&2
+            echo "WARN: ${REPOS_CONF} is not readable (run as root or fix permissions)" >&2
         else
             while IFS= read -r url; do
                 [[ -z "$url" || "$url" == \#* ]] && continue
@@ -747,14 +747,14 @@ cmd_repo_list() {
                 [[ -n "${seen[$url]:-}" ]] && continue
                 seen[$url]=1
                 found=1
-                printf "  %-60s [repo]\n" "$url"
+                printf "%-60s [repo]\n" "$url"
             done < "$REPOS_CONF"
         fi
     fi
 
     if [[ -f "$MIRRORLIST" ]]; then
         if [[ ! -r "$MIRRORLIST" ]]; then
-            echo "  WARN: ${MIRRORLIST} is not readable" >&2
+            echo "WARN: ${MIRRORLIST} is not readable" >&2
         else
             while IFS= read -r url; do
                 [[ -z "$url" || "$url" == \#* ]] && continue
@@ -762,7 +762,7 @@ cmd_repo_list() {
                 [[ -n "${seen[$url]:-}" ]] && continue
                 seen[$url]=1
                 found=1
-                printf "  %-60s [mirror]\n" "$url"
+                printf "%-60s [mirror]\n" "$url"
             done < "$MIRRORLIST"
         fi
     fi
@@ -788,7 +788,7 @@ cmd_search() {
         [[ -z "$pname" || "$pname" == \#* ]] && continue
         if echo "${pname} ${pdesc}" | grep -qi "$query"; then
             found=1
-            printf "%-24s %s\n" "$pname" "$pdesc"
+            printf "%-28s %s\n" "$pname" "$pdesc"
         fi
     done < "$PKGLIST"
 
