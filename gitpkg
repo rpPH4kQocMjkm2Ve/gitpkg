@@ -330,14 +330,13 @@ _show_makefile() {
         die "no Makefile found"
     fi
 
-    echo "── Makefile ────────────────────────────────────────────────"
     if [[ -t 1 ]]; then
-        # Interactive terminal — use pager
         ${PAGER:-less} "$makefile"
     else
+        echo "── Makefile ────────────────────────────────────────────────"
         cat "$makefile"
+        echo "────────────────────────────────────────────────────────────"
     fi
-    echo "────────────────────────────────────────────────────────────"
 }
 
 cmd_inspect() {
