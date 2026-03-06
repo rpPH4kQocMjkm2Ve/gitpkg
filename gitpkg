@@ -270,7 +270,17 @@ _build_bwrap_args() {
     done
 
     args+=(--proc /proc --dev /dev --tmpfs /tmp --tmpfs /run)
+    [[ -d /dev/shm ]] && args+=(--dev-bind /dev/shm /dev/shm)
+    [[ -d /sys ]] && args+=(--ro-bind /sys /sys)
     [[ -d /etc ]] && args+=(--ro-bind /etc /etc)
+
+    if [[ -L /etc/resolv.conf ]]; then
+        local _resolv_dir
+        _resolv_dir="$(dirname "$(realpath /etc/resolv.conf 2>/dev/null)")" || true
+        if [[ -n "$_resolv_dir" && "$_resolv_dir" == /run/* && -d "$_resolv_dir" ]]; then
+            args+=(--ro-bind "$_resolv_dir" "$_resolv_dir")
+        fi
+    fi
 
     printf '%s\0' "${args[@]}"
 }
