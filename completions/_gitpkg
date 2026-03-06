@@ -85,7 +85,8 @@ _gitpkg() {
                     ;;
                 verify)
                     _arguments \
-                        '--fix[Auto-repair permission anomalies]'
+                        '--fix[Auto-repair permission anomalies]' \
+                        '1::package:_gitpkg_packages'
                     ;;
                 repo-add)
                     _arguments \

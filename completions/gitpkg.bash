@@ -85,6 +85,8 @@ _gitpkg() {
         verify)
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=($(compgen -W "--fix" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "${pkgs[*]}" -- "$cur"))
             fi
             ;;
         repo-del)
