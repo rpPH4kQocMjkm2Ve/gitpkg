@@ -177,9 +177,9 @@ _verify_permissions() {
     done
 
     if [[ "$bad" -eq 1 && "$fix" -eq 0 ]]; then
-        echo ":: Permission anomalies detected. Run 'gitpkg verify --fix' to repair."
+        echo "Permission anomalies detected. Run 'gitpkg verify --fix' to repair."
     elif [[ "$bad" -eq 1 && "$fix" -eq 1 ]]; then
-        echo ":: Permission anomalies were repaired."
+        echo "Permission anomalies were repaired."
     fi
 
     return "$bad"
@@ -208,7 +208,7 @@ _clone() {
 
     local url
     for url in "${urls[@]}"; do
-        echo -n ":: Cloning ${url} ... "
+        echo -n "   Cloning ${url} ... "
         if git clone --filter=blob:none "$url" "$srcdir" &>/dev/null; then
             echo "ok"
             CLONE_SUCCESS_URL="$url"
@@ -257,7 +257,7 @@ _stage_and_deploy() {
     fi
 
     if [[ "$dry_run" -eq 1 ]]; then
-        echo ":: Would deploy ${file_count} files:"
+        echo "   Would deploy ${file_count} files:"
         while IFS= read -r f; do
             [[ -z "$f" ]] && continue
             if [[ -f "/${f}" ]]; then
@@ -372,7 +372,7 @@ cmd_inspect() {
 
     local cloned=0 u
     for u in "${clone_urls[@]}"; do
-        echo -n ":: Fetching ${u} ... "
+        echo -n "   Fetching ${u} ... "
         if git clone --filter=blob:none --depth=1 "$u" "$tmpdir/repo" &>/dev/null; then
             echo "ok"
             cloned=1
@@ -419,7 +419,7 @@ _install_single() {
 
     local dbdir="${DBDIR}/${name}"
     if [[ -d "$dbdir" ]]; then
-        echo ":: ${name} is already installed (skipping)"
+        echo "${name} is already installed (skipping)"
         return
     fi
 
@@ -430,6 +430,7 @@ _install_single() {
         return 1
     }
 
+    echo ":: Installing ${name}..."
     _clone "$name" "${clone_urls[@]}"
 
     local srcdir="${SRCDIR}/${name}"
@@ -446,10 +447,10 @@ _install_single() {
         cat "${srcdir}/Makefile"
         echo "────────────────────────────────────────────────────────────"
         echo ""
-        read -rp ":: Proceed with install of ${name}? [y/N] " answer
+        read -rp "Proceed with install of ${name}? [y/N] " answer
         if [[ ! "$answer" =~ ^[Yy] ]]; then
             rm -rf "$srcdir"
-            echo ":: Skipped ${name}."
+            echo "Skipped ${name}."
             return
         fi
     fi
@@ -464,10 +465,10 @@ _install_single() {
 
         local commit
         commit=$(<"${dbdir}/commit")
-        echo ":: Installed ${name} [${commit:0:8}]"
+        echo "Installed ${name} [${commit:0:8}]"
     else
         rm -rf "${SRCDIR}/${name}"
-        echo ":: Dry run complete for ${name} — nothing was installed."
+        echo "Dry run complete for ${name} — nothing was installed."
     fi
 }
 
@@ -507,7 +508,7 @@ _update_single() {
 
     # Re-clone if source cache is missing
     if [[ ! -d "$srcdir" ]]; then
-        echo ":: Source cache missing for ${name}, re-cloning..."
+        echo ":: Re-cloning ${name} (source cache missing)..."
         local -a reclone_urls=()
         mapfile -t reclone_urls < <({
             [[ -f "${dbdir}/urls" ]] && cat "${dbdir}/urls"
@@ -532,7 +533,7 @@ _update_single() {
 
         local u
         for u in "${fb_urls[@]}"; do
-            echo -n ":: Trying ${u} ... "
+            echo -n "   Trying ${u} ... "
             git -C "$srcdir" remote set-url origin "$u"
             if git -C "$srcdir" fetch origin "$branch" &>/dev/null; then
                 echo "ok"
@@ -554,7 +555,7 @@ _update_single() {
     fi
 
     if [[ "$dry_run" -eq 1 ]]; then
-        echo ":: Would update ${name} [${old_commit:0:8} → ${new_commit:0:8}]"
+        echo "${name}: ${old_commit:0:8} → ${new_commit:0:8} (would update)"
         return
     fi
 
@@ -568,9 +569,9 @@ _update_single() {
             echo "$makefile_diff"
             echo "────────────────────────────────────────────────────────────"
             echo ""
-            read -rp ":: Makefile changed. Proceed with update of ${name}? [y/N] " answer
+            read -rp "Makefile changed. Proceed with update of ${name}? [y/N] " answer
             if [[ ! "$answer" =~ ^[Yy] ]]; then
-                echo ":: Skipped ${name}."
+                echo "Skipped ${name}."
                 return
             fi
         fi
@@ -582,7 +583,7 @@ _update_single() {
     _remove_tracked "$name"
     _stage_and_deploy "$name" 0
 
-    echo ":: Updated ${name}"
+    echo "Updated ${name}"
 }
 
 cmd_remove() {
@@ -597,9 +598,9 @@ cmd_remove() {
     acquire_lock
 
     if [[ "$dry_run" -eq 1 ]]; then
-        echo ":: Would remove ${name}:"
+        echo "Would remove ${name}:"
         local filelist="${DBDIR}/${name}/files"
-        [[ -f "$filelist" ]] && sed 's|^|/|' "$filelist"
+        [[ -f "$filelist" ]] && sed 's|^|   /|' "$filelist"
         return
     fi
 
@@ -614,7 +615,7 @@ cmd_remove() {
     echo ":: Removing ${name}..."
     _remove_tracked "$name"
     rm -rf "${DBDIR}/${name}" "${SRCDIR}/${name}"
-    echo ":: Removed ${name}"
+    echo "Removed ${name}"
 }
 
 cmd_list() {
@@ -709,7 +710,7 @@ cmd_repo_add() {
     fi
 
     echo "$url" >> "$REPOS_CONF"
-    echo ":: Added repository: ${url}"
+    echo "Added repository: ${url}"
 }
 
 cmd_repo_del() {
@@ -730,7 +731,7 @@ cmd_repo_del() {
     grep -vxF "$url" "$REPOS_CONF" > "$tmpf" || true
     mv "$tmpf" "$REPOS_CONF"
 
-    echo ":: Removed repository: ${url}"
+    echo "Removed repository: ${url}"
 }
 
 cmd_repo_list() {
