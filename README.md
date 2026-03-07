@@ -2,6 +2,11 @@
 
 Minimal package manager for git + make projects. Repo-agnostic.
 
+## Why
+
+Nobody uses my software anyway, and maintaining AUR packages is tedious — so this happened.
+Each project is just a repo with a Makefile, `gitpkg install` — done.
+
 ## How it works
 
 ```
