@@ -20,13 +20,38 @@ _gitpkg_repo_urls() {
     compadd "$@" -a urls
 }
 
+_gitpkg_collection_names() {
+    local -a names=()
+    local f
+    for f in /etc/gitpkg/collections.conf /etc/gitpkg/collections; do
+        [[ -f "$f" ]] || continue
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            names+=("$line")
+        done < "$f"
+    done
+    compadd "$@" -a names
+}
+
 _gitpkg_known_packages() {
     local -a pkgs=()
-    [[ -f /etc/gitpkg/pkglist ]] || return
-    while IFS='|' read -r pname pdesc; do
-        [[ -z "$pname" || "$pname" == \#* ]] && continue
-        pkgs+=("${pname}:${pdesc}")
-    done < /etc/gitpkg/pkglist
+    # From pkglist
+    if [[ -f /etc/gitpkg/pkglist ]]; then
+        while IFS='|' read -r pname pdesc; do
+            [[ -z "$pname" || "$pname" == \#* ]] && continue
+            pkgs+=("${pname}:${pdesc}")
+        done < /etc/gitpkg/pkglist
+    fi
+    # From cached collections
+    local d subdir
+    for d in /var/cache/gitpkg/_collections/*(N/); do
+        for subdir in "$d"/*(N/); do
+            [[ -f "${subdir}/Makefile" ]] || continue
+            local cname="${subdir:t}"
+            local coll="${d:t}"
+            pkgs+=("${cname}:collection ${coll}")
+        done
+    done
     _describe 'package' pkgs
 }
 
@@ -49,6 +74,9 @@ _gitpkg() {
             repo-add\:"Add a package source"
             repo-del\:"Remove a package source"
             repo-list\:"List configured sources"
+            collection-add\:"Register a collection repository"
+            collection-del\:"Unregister a collection repository"
+            collection-list\:"List configured collections"
             search\:"Search known packages"
         ))' \
         '*::arg:->args' \
@@ -96,6 +124,14 @@ _gitpkg() {
                 repo-del)
                     _arguments \
                         '1:base url:_gitpkg_repo_urls'
+                    ;;
+                collection-add)
+                    _arguments \
+                        '1:collection name:'
+                    ;;
+                collection-del)
+                    _arguments \
+                        '1:collection name:_gitpkg_collection_names'
                     ;;
                 search)
                     _arguments \

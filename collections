@@ -1,0 +1,8 @@
+# /etc/gitpkg/collections — collection repository names
+# Each line is a repository name that exists under configured mirrors.
+# A collection repo contains multiple packages as subdirectories,
+# each with its own Makefile.
+# Example: if mirrorlist has https://gitlab.com/fkzys
+# and this file has "packages", gitpkg will check
+# https://gitlab.com/fkzys/packages/<pkgname>/Makefile
+packages
