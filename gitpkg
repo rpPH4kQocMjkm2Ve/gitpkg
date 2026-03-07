@@ -75,10 +75,10 @@ Commands:
     list                                List installed packages
     status                              Check for upstream updates
     files    <name>                     List tracked files
-    inspect  <name> [url]              Show Makefile before installing
+    inspect  <name> [url]               Show Makefile before installing
     verify   [name]                     Check system dirs or package integrity
     repo-add  <base_url>                Add a package source
-    repo-del  <base_url>               Remove a package source
+    repo-del  <base_url>                Remove a package source
     repo-list                           List configured sources
     collection-add <name>               Register a collection repository
     collection-del <name>               Unregister a collection repository
