@@ -161,7 +161,10 @@ User-added sources are stored in `/etc/gitpkg/repos.conf`.
 
 | Path | Purpose |
 |------|---------|
-| `/usr/bin/gitpkg` | Main script |
+| `/usr/bin/gitpkg` | Main script — CLI, help, command dispatch |
+| `/usr/lib/gitpkg/common.sh` | Constants, validation, locking, utility helpers |
+| `/usr/lib/gitpkg/sandbox.sh` | Bubblewrap build isolation |
+| `/usr/lib/gitpkg/package.sh` | URL resolution, cloning, staging, deploy, verification |
 | `/etc/gitpkg/repos.conf` | User-added sources |
 | `/etc/gitpkg/mirrorlist` | Default sources (shipped) |
 | `/etc/gitpkg/pkglist` | Known packages for search/completion |
