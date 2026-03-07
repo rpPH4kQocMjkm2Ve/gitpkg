@@ -12,15 +12,46 @@ gitpkg install <name>...
    https://github.com/user/<name>
    ...
 
-2. Clones the first that succeeds
-3. Shows the Makefile for review
-4. Runs: make build (sandboxed via bubblewrap)
-5. Runs: make install DESTDIR=<staging> (sandboxed)
-6. Validates staged files (path traversal, symlinks)
-7. Deploys files to /
-8. Records checksums for integrity verification
-9. Tracks installed files in /var/lib/gitpkg/<name>/
+2. Tries standalone repo first; if not found, searches collections
+3. Clones the first source that succeeds
+4. Shows the Makefile for review
+5. Runs: make build (sandboxed via bubblewrap)
+6. Runs: make install DESTDIR=<staging> (sandboxed)
+7. Validates staged files (path traversal, symlinks)
+8. Deploys files to /
+9. Records checksums for integrity verification
+10. Tracks installed files in /var/lib/gitpkg/<name>/
 ```
+
+## Collections
+
+A collection is a single git repository containing multiple packages
+as subdirectories, each with its own Makefile:
+
+```
+packages/
+├── foo/
+│   └── Makefile
+├── bar/
+│   └── Makefile
+└── baz/
+    └── Makefile
+```
+
+When installing a package, gitpkg first tries standalone repos,
+then searches all configured collections.
+
+Default collections are listed in `/etc/gitpkg/collections`.
+User collections can be managed with:
+
+```
+sudo gitpkg collection-add <name>
+sudo gitpkg collection-del <name>
+gitpkg collection-list
+```
+
+During updates, gitpkg detects whether only the package's subdirectory
+changed within the collection and skips rebuilds when unnecessary.
 
 ## Security
 
@@ -77,10 +108,10 @@ PREFIX = /usr
 DESTDIR =
 
 build:
-	# compile step
+    # compile step
 
 install:
-	install -Dm755 myapp $(DESTDIR)$(PREFIX)/bin/myapp
+    install -Dm755 myapp $(DESTDIR)$(PREFIX)/bin/myapp
 ```
 
 ## Usage
@@ -97,6 +128,9 @@ gitpkg verify [--fix] [name]
 gitpkg repo-add <base_url>
 gitpkg repo-del <base_url>
 gitpkg repo-list
+gitpkg collection-add <name>
+gitpkg collection-del <name>
+gitpkg collection-list
 gitpkg search <query>
 ```
 
@@ -131,8 +165,11 @@ User-added sources are stored in `/etc/gitpkg/repos.conf`.
 | `/etc/gitpkg/repos.conf` | User-added sources |
 | `/etc/gitpkg/mirrorlist` | Default sources (shipped) |
 | `/etc/gitpkg/pkglist` | Known packages for search/completion |
-| `/var/lib/gitpkg/<name>/` | Package metadata (files, commit, urls, checksums) |
-| `/var/cache/gitpkg/<name>/` | Cloned source trees |
+| `/etc/gitpkg/collections` | Default collection names (shipped) |
+| `/etc/gitpkg/collections.conf` | User-added collections |
+| `/var/lib/gitpkg/<name>/` | Package metadata (files, commit, urls, checksums, collection) |
+| `/var/cache/gitpkg/<name>/` | Cloned source trees (standalone) |
+| `/var/cache/gitpkg/_collections/<name>/` | Cloned collection repositories |
 
 ## Options
 
