@@ -119,11 +119,30 @@ install:
     install -Dm755 myapp $(DESTDIR)$(PREFIX)/bin/myapp
 ```
 
+### Dependency file
+
+Packages may include a `depends` file listing dependencies.
+gitpkg checks it before building and warns about missing ones.
+
+Format:
+
+```
+# gitpkg packages (checked via /var/lib/gitpkg/<name>/)
+gitpkg:some-lib
+
+# system packages (checked via command -v or pacman -Qq)
+system:gcc
+system:ffmpeg
+```
+
+Use `--nodeps` to skip the check.
+
+
 ## Usage
 
 ```
-gitpkg install [--needed] <name>...
-gitpkg update [name]
+gitpkg install [--needed] [--nodeps] <name>...
+gitpkg update [--nodeps] [name...]
 gitpkg remove <name>
 gitpkg list
 gitpkg status
