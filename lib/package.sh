@@ -124,6 +124,46 @@ _find_in_collections() {
     return 1
 }
 
+# ── Dependency checking ───────────────────────────────────
+
+_check_package_deps() {
+    local workdir="$1"
+    local depsfile="${workdir}/depends"
+    [[ -f "$depsfile" ]] || return 0
+
+    local missing=0
+    local header_shown=0
+
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+
+        local type dep
+        type="${line%%:*}"
+        dep="${line#*:}"
+        [[ -n "$dep" ]] || continue
+
+        case "$type" in
+            gitpkg)
+                if [[ ! -d "${DBDIR}/${dep}" ]]; then
+                    [[ $header_shown -eq 0 ]] && { printf '   Missing dependencies:\n'; header_shown=1; }
+                    printf '     [gitpkg]  %-20s → gitpkg install %s\n' "$dep" "$dep"
+                    missing=1
+                fi
+                ;;
+            system)
+                if ! command -v "$dep" &>/dev/null && \
+                   ! pacman -Qq "$dep" &>/dev/null 2>&1; then
+                    [[ $header_shown -eq 0 ]] && { printf '   Missing dependencies:\n'; header_shown=1; }
+                    printf '     [system]  %-20s → pacman -S %s\n' "$dep" "$dep"
+                    missing=1
+                fi
+                ;;
+        esac
+    done < "$depsfile"
+
+    return $missing
+}
+
 # ── Clone ─────────────────────────────────────────────────
 
 _clone() {

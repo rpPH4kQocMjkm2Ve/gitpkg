@@ -24,7 +24,7 @@ Usage: gitpkg <command> [options] [args]
 
 Commands:
     install  <name> [name...]           Clone, build, install
-    update   [name]                     Update one or all packages
+    update   [name...]                    Update one, many, or all packages
     remove   <name>                     Uninstall and remove source
     list                                List installed packages
     status                              Check for upstream updates
@@ -45,6 +45,7 @@ Options:
     --fix            Auto-repair permission anomalies (verify)
     --skip-inspect   Skip Makefile review (install)
     --needed         Do not reinstall up to date packages
+    --nodeps         Skip dependency check (install, update)
     -h, --help       Show this help
     -V, --version    Show version
 
@@ -150,6 +151,7 @@ cmd_install() {
     local dry_run="$1"; shift
     local skip_inspect="$1"; shift
     local needed="$1"; shift
+    local nodeps="$1"; shift
 
     [[ $# -gt 0 ]] || die "usage: gitpkg install <name>... [--needed] [--skip-inspect] [-n]"
     [[ $EUID -eq 0 ]] || die "must run as root"
@@ -168,6 +170,7 @@ _install_single() {
     local dry_run="$2"
     local skip_inspect="$3"
     local needed="$4"
+    local nodeps="$5";
 
     local dbdir="${DBDIR}/${name}"
     local srcdir="${SRCDIR}/${name}"
@@ -227,6 +230,16 @@ _install_single() {
     if [[ -z "$workdir" || ! -f "${workdir}/Makefile" ]]; then
         printf 'ERROR: no Makefile found for %s\n' "$name" >&2
         return 1
+    fi
+
+    if [[ "$nodeps" -eq 0 && "$dry_run" -eq 0 ]] && ! _check_package_deps "$workdir"; then
+        echo ""
+        read -rp "   Dependencies missing. Continue anyway? [y/N] " answer
+        if [[ ! "$answer" =~ ^[Yy] ]]; then
+            [[ "$from_collection" -eq 0 && -d "$srcdir" ]] && rm -rf "$srcdir"
+            printf 'Skipped %s.\n' "$name"
+            return
+        fi
     fi
 
     if [[ "$skip_inspect" -eq 0 && "$dry_run" -eq 0 ]]; then
@@ -298,29 +311,33 @@ cmd_update() {
 
     local dry_run="$1"; shift
     local skip_inspect="$1"; shift
-    local name="${1:-}"
+    local nodeps="$1"; shift
 
     # Reset the collection fetch dedup cache for this run
     _FETCHED_COLLECTIONS=()
 
-    if [[ -z "$name" ]]; then
+    if [[ $# -eq 0 ]]; then
         local found=0
         for d in "${DBDIR}"/*/; do
             [[ -d "$d" ]] || continue
             found=1
-            _update_single "$(basename "$d")" "$dry_run" "$skip_inspect"
+            _update_single "$(basename "$d")" "$dry_run" "$skip_inspect" "$nodeps"
         done
         [[ $found -eq 1 ]] || echo "No packages installed."
         return
     fi
 
-    _update_single "$name" "$dry_run" "$skip_inspect"
+    local name
+    for name in "$@"; do
+        _update_single "$name" "$dry_run" "$skip_inspect" "$nodeps"
+    done
 }
 
 _update_single() {
     local name="$1"
     local dry_run="${2:-0}"
     local skip_inspect="${3:-0}"
+    local nodeps="${4:-0}"
     local dbdir="${DBDIR}/${name}"
 
     [[ -d "$dbdir" ]] || die "${name} is not installed"
@@ -333,9 +350,9 @@ _update_single() {
     [[ -f "${dbdir}/collection" ]] && collection=$(cat "${dbdir}/collection")
 
     if [[ -n "$collection" ]]; then
-        _update_collection_package "$name" "$collection" "$old_commit" "$dry_run" "$skip_inspect"
+        _update_collection_package "$name" "$collection" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps"
     else
-        _update_standalone_package "$name" "$old_commit" "$dry_run" "$skip_inspect"
+        _update_standalone_package "$name" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps"
     fi
 }
 
@@ -344,6 +361,7 @@ _update_standalone_package() {
     local old_commit="$2"
     local dry_run="$3"
     local skip_inspect="$4"
+    local nodeps="$5"
     local srcdir="${SRCDIR}/${name}"
     local dbdir="${DBDIR}/${name}"
 
@@ -422,6 +440,12 @@ _update_standalone_package() {
     printf ':: Updating %s [%s -> %s]...\n' "$name" "${old_commit:0:8}" "${new_commit:0:8}"
     git -C "$srcdir" reset --hard "origin/${branch}" &>/dev/null
 
+    if [[ "$nodeps" -eq 0 ]] && ! _check_package_deps "$srcdir"; then
+        echo ""
+        read -rp "   Dependencies missing. Continue anyway? [y/N] " answer
+        [[ "$answer" =~ ^[Yy] ]] || { printf 'Skipped %s.\n' "$name"; return; }
+    fi
+
     _remove_tracked "$name"
     _stage_and_deploy "$name" 0 "$srcdir" "$srcdir"
 
@@ -434,6 +458,7 @@ _update_collection_package() {
     local old_commit="$3"
     local dry_run="$4"
     local skip_inspect="$5"
+    local nodeps="$6"
     local dbdir="${DBDIR}/${name}"
     local colldir="${COLLECTIONSDIR}/${collection}"
 
@@ -535,6 +560,12 @@ _update_collection_package() {
     local workdir="${colldir}/${name}"
     if [[ ! -f "${workdir}/Makefile" ]]; then
         die "${name}: Makefile disappeared from collection ${collection}"
+    fi
+
+    if [[ "$nodeps" -eq 0 ]] && ! _check_package_deps "$workdir"; then
+        echo ""
+        read -rp "   Dependencies missing. Continue anyway? [y/N] " answer
+        [[ "$answer" =~ ^[Yy] ]] || { printf 'Skipped %s.\n' "$name"; return; }
     fi
 
     _remove_tracked "$name"
@@ -909,6 +940,7 @@ YES=0
 FIX=0
 SKIP_INSPECT=0
 NEEDED=0
+NODEPS=0
 ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -918,6 +950,7 @@ while [[ $# -gt 0 ]]; do
         --fix)           FIX=1; shift ;;
         --skip-inspect)  SKIP_INSPECT=1; shift ;;
         --needed)        NEEDED=1; shift ;;
+        --nodeps)        NODEPS=1; shift ;;
         -h|--help)       show_help ;;
         -*)              die "unknown option: $1" ;;
         *)               ARGS+=("$1"); shift ;;
@@ -925,8 +958,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$COMMAND" in
-    install)         cmd_install "$DRY_RUN" "$SKIP_INSPECT" "$NEEDED" ${ARGS[@]+"${ARGS[@]}"} ;;
-    update)          cmd_update "$DRY_RUN" "$SKIP_INSPECT" "${ARGS[0]:-}" ;;
+    install)         cmd_install "$DRY_RUN" "$SKIP_INSPECT" "$NEEDED" "$NODEPS" ${ARGS[@]+"${ARGS[@]}"} ;;
+    update)          cmd_update "$DRY_RUN" "$SKIP_INSPECT" "$NODEPS" ${ARGS[@]+"${ARGS[@]}"} ;;
     remove)          cmd_remove "$DRY_RUN" "$YES" "${ARGS[0]:-}" ;;
     list)            cmd_list ;;
     status)          cmd_status ;;

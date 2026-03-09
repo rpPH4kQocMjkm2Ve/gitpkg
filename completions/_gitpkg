@@ -90,12 +90,14 @@ _gitpkg() {
                         '(-n --dry-run)'{-n,--dry-run}'[Show what would be done]' \
                         '--skip-inspect[Skip Makefile review]' \
                         '--needed[Do not reinstall up to date packages]' \
+                        '--nodeps[Skip dependency check]' \
                         '*:name:_gitpkg_known_packages'
                     ;;
                 update)
                     _arguments \
                         '(-n --dry-run)'{-n,--dry-run}'[Show what would be done]' \
-                        '1::package:_gitpkg_packages'
+                        '--nodeps[Skip dependency check]' \
+                        '*:package:_gitpkg_packages'
                     ;;
                 remove)
                     _arguments \
