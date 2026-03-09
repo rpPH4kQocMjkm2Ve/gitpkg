@@ -1,0 +1,7 @@
+# system
+system:git
+system:make
+system:bwrap
+system:find
+system:awk
+system:sha256sum
