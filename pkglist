@@ -8,3 +8,4 @@ subs2srs|A tool for flashcards creation (Mono version)
 subs2srs-gtk3|A tool for flashcards creation (Gtk3 version)
 hardened_malloc|GrapheneOS hardened_malloc — packaged for system-wide preloading
 fetch|minimal system information tool with gitpkg integration
+transformers_ocr|An OCR tool that uses Transformers
