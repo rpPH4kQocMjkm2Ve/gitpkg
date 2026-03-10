@@ -161,7 +161,7 @@ cmd_install() {
 
     local name
     for name in "$@"; do
-        _install_single "$name" "$dry_run" "$skip_inspect" "$needed"
+        _install_single "$name" "$dry_run" "$skip_inspect" "$needed" "$nodeps"
     done
 }
 
@@ -170,7 +170,7 @@ _install_single() {
     local dry_run="$2"
     local skip_inspect="$3"
     local needed="$4"
-    local nodeps="$5";
+    local nodeps="$5"
 
     local dbdir="${DBDIR}/${name}"
     local srcdir="${SRCDIR}/${name}"
