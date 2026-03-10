@@ -9,3 +9,4 @@ subs2srs-gtk3|A tool for flashcards creation (Gtk3 version)
 hardened_malloc|GrapheneOS hardened_malloc — packaged for system-wide preloading
 fetch|minimal system information tool with gitpkg integration
 transformers_ocr|An OCR tool that uses Transformers
+btrfs-file-history|Track file and directory lifecycle across btrfs snapshots
