@@ -181,3 +181,20 @@ _safe_read_commit() {
 _strip_escape_sequences() {
     sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b\][^\x07]*\x07//g; s/\x1b[PX^_][^\x1b]*\x1b\\//g; s/\x1b.//g'
 }
+
+# ── System package manager detection ──────────────────────
+
+_is_system_managed() {
+    local name="$1"
+    if command -v pacman &>/dev/null; then
+        pacman -Qq "$name" &>/dev/null 2>&1 && return 0
+    fi
+    if command -v dpkg &>/dev/null; then
+        dpkg -s "$name" &>/dev/null 2>&1 && return 0
+    fi
+    if command -v rpm &>/dev/null; then
+        rpm -q "$name" &>/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+

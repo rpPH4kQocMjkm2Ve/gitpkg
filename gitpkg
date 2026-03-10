@@ -175,6 +175,12 @@ _install_single() {
     local dbdir="${DBDIR}/${name}"
     local srcdir="${SRCDIR}/${name}"
 
+    if _is_system_managed "$name"; then
+        printf 'ERROR: %s is managed by the system package manager — skipping\n' "$name" >&2
+        printf '  Use your system package manager to manage this package.\n' >&2
+        return 1
+    fi
+
     if [[ -d "$dbdir" ]]; then
         if [[ "$needed" -eq 1 ]]; then
             printf '%s is up to date -- skipping\n' "$name"
@@ -344,6 +350,11 @@ _update_single() {
 
     local old_commit
     old_commit=$(_safe_read_commit "${dbdir}/commit")
+
+    if _is_system_managed "$name"; then
+        printf '%s: managed by system package manager, skipping\n' "$name"
+        return
+    fi
 
     # Determine if this is a collection package
     local collection=""
@@ -582,6 +593,10 @@ cmd_remove() {
     [[ -n "$name" ]]            || die "usage: gitpkg remove <name>"
     [[ $EUID -eq 0 ]]           || die "must run as root"
     [[ -d "${DBDIR}/${name}" ]] || die "${name} is not installed"
+
+    if _is_system_managed "$name"; then
+        die "${name} is managed by the system package manager. Use your system package manager to remove it."
+    fi
 
     acquire_lock
 
