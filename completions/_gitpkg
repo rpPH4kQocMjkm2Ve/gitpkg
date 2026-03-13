@@ -107,7 +107,7 @@ _gitpkg() {
                         '--skip-inspect[Skip Makefile review]' \
                         '--needed[Do not reinstall up to date packages]' \
                         '--nodeps[Skip dependency check]' \
-                        '--require-sig[Require trusted commit signature]' \
+                        '--nosig[Skip commit signature verification]' \
                         '*:name:_gitpkg_known_packages'
                     ;;
                 update)
@@ -115,7 +115,7 @@ _gitpkg() {
                         '(-n --dry-run)'{-n,--dry-run}'[Show what would be done]' \
                         '--skip-inspect[Skip Makefile review]' \
                         '--nodeps[Skip dependency check]' \
-                        '--require-sig[Require trusted commit signature]' \
+                        '--nosig[Skip commit signature verification]' \
                         '*:package:_gitpkg_packages'
                     ;;
                 remove)
