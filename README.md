@@ -38,13 +38,14 @@ gitpkg install <name>...
 
 2. Tries standalone repo first; if not found, searches collections
 3. Clones the first source that succeeds
-4. Shows the Makefile for review
-5. Runs: make build (sandboxed via bubblewrap)
-6. Runs: make install DESTDIR=<staging> (sandboxed)
-7. Validates staged files (path traversal, symlinks)
-8. Deploys files to /
-9. Records checksums for integrity verification
-10. Tracks installed files in /var/lib/gitpkg/<name>/
+4. Verifies commit signature against trusted keys
+5. Shows the Makefile for review
+6. Runs: make build (sandboxed via bubblewrap)
+7. Runs: make install DESTDIR=<staging> (sandboxed)
+8. Validates staged files (path traversal, symlinks)
+9. Deploys files to /
+10. Records checksums for integrity verification
+11. Tracks installed files in /var/lib/gitpkg/<name>/
 ```
 
 ## Collections
@@ -100,6 +101,22 @@ During updates, if the Makefile has changed, the diff is shown
 for review before proceeding.
 
 Use `--skip-inspect` to bypass Makefile review during install and update.
+
+### Signature verification
+
+If `/etc/gitpkg/allowed_signers` or `signers.conf` contains SSH public
+keys, gitpkg requires valid commit signatures for install and update.
+Unsigned or untrusted commits are rejected.
+
+Default keys ship in `allowed_signers`. Add your own with:
+
+```
+sudo gitpkg signer-add <principal> <ssh-pubkey>
+sudo gitpkg signer-del <principal>
+gitpkg signer-list
+```
+
+Use `--nosig` to bypass signature verification.
 
 ## Coexistence with system package managers
 
@@ -178,8 +195,8 @@ Behavior:
 ## Usage
 
 ```
-gitpkg install [--needed] [--nodeps] [--skip-inspect] <name>...
-gitpkg update [--nodeps] [--skip-inspect] [name...]
+gitpkg install [--needed] [--nodeps] [--nosig] [--skip-inspect] <name>...
+gitpkg update [--nodeps] [--nosig] [--skip-inspect] [name...]
 gitpkg remove [--nodeps] <name>
 gitpkg list
 gitpkg status
@@ -192,16 +209,28 @@ gitpkg repo-list
 sudo gitpkg collection-add <name>
 sudo gitpkg collection-del <name>
 gitpkg collection-list
+sudo gitpkg signer-add <principal> <ssh-pubkey>
+sudo gitpkg signer-del <principal>
+gitpkg signer-list
 gitpkg search <query>
 ```
 
-## Environment
+## Configuration
 
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `GITPKG_CLONE_TIMEOUT` | 120 | Clone timeout in seconds |
-| `GITPKG_FETCH_TIMEOUT` | 30 | Fetch timeout in seconds |
-| `GITPKG_LSREMOTE_TIMEOUT` | 15 | Status check timeout in seconds |
+Timeouts are configured in `/etc/gitpkg/gitpkg.conf`:
+
+```
+CLONE_TIMEOUT=120
+FETCH_TIMEOUT=30
+STATUS_TIMEOUT=15
+```
+
+Command-line flags override config values:
+
+```
+sudo gitpkg install --clone-timeout 60 <name>
+sudo gitpkg status --status-timeout 10
+```
 
 ## Sources
 
@@ -223,14 +252,17 @@ User-added sources are stored in `/etc/gitpkg/repos.conf`.
 | Path | Purpose |
 |------|---------|
 | `/usr/bin/gitpkg` | Main script — CLI, help, command dispatch |
-| `/usr/lib/gitpkg/common.sh` | Constants, validation, locking, utility helpers |
+| `/usr/lib/gitpkg/common.sh` | Constants, config loading, validation, locking, utility helpers |
 | `/usr/lib/gitpkg/sandbox.sh` | Bubblewrap build isolation |
-| `/usr/lib/gitpkg/package.sh` | URL resolution, cloning, staging, deploy, verification |
+| `/usr/lib/gitpkg/package.sh` | URL resolution, cloning, staging, deploy, signature verification |
+| `/etc/gitpkg/gitpkg.conf` | Timeout settings |
 | `/etc/gitpkg/repos.conf` | User-added sources |
 | `/etc/gitpkg/mirrorlist` | Default sources (shipped) |
 | `/etc/gitpkg/pkglist` | Known packages for search/completion |
 | `/etc/gitpkg/collections` | Default collection names (shipped) |
 | `/etc/gitpkg/collections.conf` | User-added collections |
+| `/etc/gitpkg/allowed_signers` | Default trusted SSH signing keys (shipped) |
+| `/etc/gitpkg/signers.conf` | User-added trusted SSH signing keys |
 | `/var/lib/gitpkg/<name>/` | Package metadata (files, commit, urls, checksums, collection, backup, backup_checksums, depends) |
 | `/var/cache/gitpkg/<name>/` | Cloned source trees (standalone) |
 | `/var/cache/gitpkg/_collections/<name>/` | Cloned collection repositories |
@@ -245,6 +277,10 @@ User-added sources are stored in `/etc/gitpkg/repos.conf`.
 | `--fix` | verify | Auto-repair permissions |
 | `--needed` | install | Do not reinstall up to date packages |
 | `--nodeps` | install, update, remove | Skip dependency check |
+| `--nosig` | install, update | Skip commit signature verification |
+| `--clone-timeout <s>` | install, update | Clone timeout in seconds (default: 120) |
+| `--fetch-timeout <s>` | install, update | Fetch timeout in seconds (default: 30) |
+| `--status-timeout <s>` | status | Status check timeout in seconds (default: 15) |
 
 ## License
 
