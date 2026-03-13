@@ -248,4 +248,4 @@ User-added sources are stored in `/etc/gitpkg/repos.conf`.
 
 ## License
 
-GPL-3.0
+AGPL-3.0-or-later
