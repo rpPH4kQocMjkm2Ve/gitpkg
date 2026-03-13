@@ -11,6 +11,7 @@ install:
 	install -Dm644 mirrorlist $(DESTDIR)/etc/gitpkg/mirrorlist
 	install -Dm644 pkglist $(DESTDIR)/etc/gitpkg/pkglist
 	install -Dm644 collections $(DESTDIR)/etc/gitpkg/collections
+	install -Dm644 allowed_signers $(DESTDIR)/etc/gitpkg/allowed_signers
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/gitpkg
@@ -20,3 +21,4 @@ uninstall:
 	rm -f $(DESTDIR)/etc/gitpkg/mirrorlist
 	rm -f $(DESTDIR)/etc/gitpkg/pkglist
 	rm -f $(DESTDIR)/etc/gitpkg/collections
+	rm -f $(DESTDIR)/etc/gitpkg/allowed_signers

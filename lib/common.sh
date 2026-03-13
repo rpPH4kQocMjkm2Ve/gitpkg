@@ -11,6 +11,8 @@ readonly MIRRORLIST="${CONFDIR}/mirrorlist"
 readonly PKGLIST="${CONFDIR}/pkglist"
 readonly COLLECTIONS_CONF="${CONFDIR}/collections.conf"
 readonly COLLECTIONS_LIST="${CONFDIR}/collections"
+readonly SIGNERS_DEFAULT="${CONFDIR}/allowed_signers"
+readonly SIGNERS_CONF="${CONFDIR}/signers.conf"
 readonly CLONE_TIMEOUT="${GITPKG_CLONE_TIMEOUT:-120}"
 readonly FETCH_TIMEOUT="${GITPKG_FETCH_TIMEOUT:-30}"
 readonly LSREMOTE_TIMEOUT="${GITPKG_LSREMOTE_TIMEOUT:-15}"
@@ -166,6 +168,10 @@ _ensure_conf() {
     if [[ ! -f "$COLLECTIONS_CONF" ]]; then
         touch "$COLLECTIONS_CONF"
         chmod 644 "$COLLECTIONS_CONF"
+    fi
+    if [[ ! -f "$SIGNERS_CONF" ]]; then
+        touch "$SIGNERS_CONF"
+        chmod 644 "$SIGNERS_CONF"
     fi
 }
 

@@ -39,6 +39,9 @@ Commands:
     collection-add <name>               Register a collection repository
     collection-del <name>               Unregister a collection repository
     collection-list                     List configured collections
+    signer-add <principal> <pubkey>     Add a trusted signing key
+    signer-del <principal>              Remove a trusted signing key
+    signer-list                         List trusted signing keys
     search    <query>                   Search known packages
 
 Options:
@@ -48,6 +51,7 @@ Options:
     --skip-inspect   Skip Makefile review (install, update)
     --needed         Do not reinstall up to date packages
     --nodeps         Skip dependency check (install, update, remove)
+    --require-sig    Require trusted commit signature (install, update)
     -h, --help       Show this help
     -V, --version    Show version
 
@@ -55,12 +59,20 @@ Environment:
     GITPKG_CLONE_TIMEOUT     Clone timeout in seconds (default: 120)
     GITPKG_FETCH_TIMEOUT     Fetch timeout in seconds (default: 30)
     GITPKG_LSREMOTE_TIMEOUT  Status check timeout in seconds (default: 15)
+    GITPKG_REQUIRE_SIG       Require signed commits (0/1, default: 0)
 
 Security:
     Build and install steps run inside a bubblewrap sandbox with
     PID/UTS/IPC namespaces isolated, system dirs read-only.
     DESTDIR is enforced at filesystem level — installed files are
     staged, validated, then deployed. Always review the Makefile.
+
+    Signatures:
+    If /etc/gitpkg/allowed_signers or signers.conf contains SSH public
+    keys, gitpkg verifies commit signatures before install/update.
+    Default keys ship in allowed_signers. Add your own with:
+      sudo gitpkg signer-add <principal> <ssh-pubkey>
+    Use --require-sig to abort on unsigned or untrusted commits.
 
 Collections:
     A collection is a single git repository containing multiple packages
@@ -154,6 +166,7 @@ cmd_install() {
     local skip_inspect="$1"; shift
     local needed="$1"; shift
     local nodeps="$1"; shift
+    local require_sig="$1"; shift
 
     [[ $# -gt 0 ]] || die "usage: gitpkg install <name>... [--needed] [--skip-inspect] [-n]"
     [[ $EUID -eq 0 ]] || die "must run as root"
@@ -163,7 +176,7 @@ cmd_install() {
 
     local name
     for name in "$@"; do
-        _install_single "$name" "$dry_run" "$skip_inspect" "$needed" "$nodeps"
+        _install_single "$name" "$dry_run" "$skip_inspect" "$needed" "$nodeps" "$require_sig"
     done
 }
 
@@ -173,6 +186,7 @@ _install_single() {
     local skip_inspect="$3"
     local needed="$4"
     local nodeps="$5"
+    local require_sig="$6"
 
     local dbdir="${DBDIR}/${name}"
     local srcdir="${SRCDIR}/${name}"
@@ -245,6 +259,16 @@ _install_single() {
     if [[ -z "$workdir" || ! -f "${workdir}/Makefile" ]]; then
         printf 'ERROR: no Makefile found for %s\n' "$name" >&2
         return 1
+    fi
+
+    # ── Signature verification ──
+    if [[ "$dry_run" -eq 0 ]]; then
+        if ! _verify_signature "$gitdir"; then
+            if [[ "$require_sig" -eq 1 ]]; then
+                [[ "$from_collection" -eq 0 && -d "$srcdir" ]] && rm -rf "$srcdir"
+                die "unsigned/untrusted commit for ${name} — aborting (--require-sig)"
+            fi
+        fi
     fi
 
     if [[ "$nodeps" -eq 0 && "$dry_run" -eq 0 ]] && ! _check_package_deps "$workdir"; then
@@ -327,8 +351,8 @@ cmd_update() {
     local dry_run="$1"; shift
     local skip_inspect="$1"; shift
     local nodeps="$1"; shift
+    local require_sig="$1"; shift
 
-    # Reset the collection fetch dedup cache for this run
     declare -gA _FETCHED_COLLECTIONS=()
 
     if [[ $# -eq 0 ]]; then
@@ -336,7 +360,7 @@ cmd_update() {
         for d in "${DBDIR}"/*/; do
             [[ -d "$d" ]] || continue
             found=1
-            _update_single "$(basename "$d")" "$dry_run" "$skip_inspect" "$nodeps"
+            _update_single "$(basename "$d")" "$dry_run" "$skip_inspect" "$nodeps" "$require_sig"
         done
         [[ $found -eq 1 ]] || echo "No packages installed."
         return
@@ -344,7 +368,7 @@ cmd_update() {
 
     local name
     for name in "$@"; do
-        _update_single "$name" "$dry_run" "$skip_inspect" "$nodeps"
+        _update_single "$name" "$dry_run" "$skip_inspect" "$nodeps" "$require_sig"
     done
 }
 
@@ -353,6 +377,7 @@ _update_single() {
     local dry_run="${2:-0}"
     local skip_inspect="${3:-0}"
     local nodeps="${4:-0}"
+    local require_sig="${5:-0}"
     local dbdir="${DBDIR}/${name}"
 
     [[ -d "$dbdir" ]] || die "${name} is not installed"
@@ -370,9 +395,9 @@ _update_single() {
     [[ -f "${dbdir}/collection" ]] && collection=$(cat "${dbdir}/collection")
 
     if [[ -n "$collection" ]]; then
-        _update_collection_package "$name" "$collection" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps"
+        _update_collection_package "$name" "$collection" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps" "$require_sig"
     else
-        _update_standalone_package "$name" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps"
+        _update_standalone_package "$name" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps" "$require_sig"
     fi
 }
 
@@ -382,6 +407,7 @@ _update_standalone_package() {
     local dry_run="$3"
     local skip_inspect="$4"
     local nodeps="$5"
+    local require_sig="$6"
     local srcdir="${SRCDIR}/${name}"
     local dbdir="${DBDIR}/${name}"
 
@@ -435,6 +461,15 @@ _update_standalone_package() {
         return
     fi
 
+    # ── Signature verification ──
+    if [[ "$dry_run" -eq 0 ]]; then
+        if ! _verify_signature "$srcdir" "origin/${branch}"; then
+            if [[ "$require_sig" -eq 1 ]]; then
+                die "unsigned/untrusted commit for ${name} — aborting (--require-sig)"
+            fi
+        fi
+    fi
+
     if [[ "$dry_run" -eq 1 ]]; then
         printf '%s: %s -> %s (would update)\n' "$name" "${old_commit:0:8}" "${new_commit:0:8}"
         return
@@ -479,6 +514,7 @@ _update_collection_package() {
     local dry_run="$4"
     local skip_inspect="$5"
     local nodeps="$6"
+    local require_sig="$7"
     local dbdir="${DBDIR}/${name}"
     local colldir="${COLLECTIONSDIR}/${collection}"
 
@@ -550,6 +586,15 @@ _update_collection_package() {
             "$name" "${old_commit:0:8}" "${new_commit:0:8}" "$collection"
         echo "$new_commit" > "${dbdir}/commit"
         return
+    fi
+
+    # ── Signature verification ──
+    if [[ "$dry_run" -eq 0 ]]; then
+        if ! _verify_signature "$colldir" "origin/${branch}"; then
+            if [[ "$require_sig" -eq 1 ]]; then
+                die "unsigned/untrusted commit for ${name} (collection: ${collection}) — aborting (--require-sig)"
+            fi
+        fi
     fi
 
     if [[ "$dry_run" -eq 1 ]]; then
@@ -991,6 +1036,88 @@ cmd_search() {
     [[ $found -eq 1 ]] || printf 'No packages matching %s.\n' "'${query}'"
 }
 
+# ── Signer commands ────────────────────────────────────
+
+cmd_signer_add() {
+    local principal="${1:-}"
+    local pubkey="${*:2}"
+
+    [[ -n "$principal" ]] || die "usage: gitpkg signer-add <principal> <ssh-pubkey>"
+    [[ -n "$pubkey" ]]    || die "usage: gitpkg signer-add <principal> <ssh-pubkey>"
+    [[ $EUID -eq 0 ]]     || die "must run as root"
+
+    # Validate key format
+    [[ "$pubkey" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)[[:space:]] ]] \
+        || die "invalid SSH public key format: must start with key type (ssh-ed25519, ssh-rsa, ...)"
+
+    _ensure_conf
+
+    local entry="${principal} ${pubkey}"
+
+    if grep -qF "$principal" "$SIGNERS_CONF" 2>/dev/null; then
+        die "signer already added: ${principal}"
+    fi
+
+    if [[ -f "$SIGNERS_DEFAULT" ]] && grep -qF "$principal" "$SIGNERS_DEFAULT" 2>/dev/null; then
+        die "signer already exists in default keyring: ${principal}"
+    fi
+
+    echo "$entry" >> "$SIGNERS_CONF"
+    printf 'Added signer: %s\n' "$principal"
+}
+
+cmd_signer_del() {
+    local principal="${1:-}"
+    [[ -n "$principal" ]] || die "usage: gitpkg signer-del <principal>"
+    [[ $EUID -eq 0 ]]     || die "must run as root"
+
+    if [[ -f "$SIGNERS_DEFAULT" ]] && grep -q "^${principal} " "$SIGNERS_DEFAULT" 2>/dev/null; then
+        die "cannot remove default signer '${principal}' — edit ${SIGNERS_DEFAULT} manually"
+    fi
+
+    if [[ ! -f "$SIGNERS_CONF" ]] || ! grep -q "^${principal} " "$SIGNERS_CONF" 2>/dev/null; then
+        die "signer not found: ${principal}"
+    fi
+
+    local content
+    content=$(grep -v "^${principal} " "$SIGNERS_CONF" || true)
+    if [[ -n "$content" ]]; then
+        printf '%s\n' "$content" > "$SIGNERS_CONF"
+    else
+        : > "$SIGNERS_CONF"
+    fi
+
+    printf 'Removed signer: %s\n' "$principal"
+}
+
+cmd_signer_list() {
+    local found=0
+    local -A seen=()
+
+    local conf label
+    for conf in "$SIGNERS_CONF" "$SIGNERS_DEFAULT"; do
+        [[ -f "$conf" && -r "$conf" ]] || continue
+        if [[ "$conf" == "$SIGNERS_CONF" ]]; then
+            label="user"
+        else
+            label="default"
+        fi
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            local principal
+            principal="${line%% *}"
+            [[ -n "${seen[$principal]:-}" ]] && continue
+            seen[$principal]=1
+            found=1
+            local keytype
+            keytype=$(awk '{print $2}' <<< "$line")
+            printf '%-32s %-20s [%s]\n' "$principal" "$keytype" "$label"
+        done < "$conf"
+    done
+
+    [[ $found -eq 1 ]] || echo "No signers configured. Use 'gitpkg signer-add <principal> <ssh-pubkey>'."
+}
+
 # ── Entry point ───────────────────────────────────────────
 
 case "${1:-}" in
@@ -1008,6 +1135,7 @@ FIX=0
 SKIP_INSPECT=0
 NEEDED=0
 NODEPS=0
+REQUIRE_SIG="${GITPKG_REQUIRE_SIG:-0}"
 ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -1018,6 +1146,7 @@ while [[ $# -gt 0 ]]; do
         --skip-inspect)  SKIP_INSPECT=1; shift ;;
         --needed)        NEEDED=1; shift ;;
         --nodeps)        NODEPS=1; shift ;;
+        --require-sig)   REQUIRE_SIG=1; shift ;;
         -h|--help)       show_help ;;
         -*)              die "unknown option: $1" ;;
         *)               ARGS+=("$1"); shift ;;
@@ -1025,8 +1154,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$COMMAND" in
-    install)         cmd_install "$DRY_RUN" "$SKIP_INSPECT" "$NEEDED" "$NODEPS" ${ARGS[@]+"${ARGS[@]}"} ;;
-    update)          cmd_update "$DRY_RUN" "$SKIP_INSPECT" "$NODEPS" ${ARGS[@]+"${ARGS[@]}"} ;;
+    install)         cmd_install "$DRY_RUN" "$SKIP_INSPECT" "$NEEDED" "$NODEPS" "$REQUIRE_SIG" ${ARGS[@]+"${ARGS[@]}"} ;;
+    update)          cmd_update "$DRY_RUN" "$SKIP_INSPECT" "$NODEPS" "$REQUIRE_SIG" ${ARGS[@]+"${ARGS[@]}"} ;;
     remove)          cmd_remove "$DRY_RUN" "$YES" "$NODEPS" "${ARGS[0]:-}" ;;
     list)            cmd_list ;;
     status)          cmd_status ;;
@@ -1039,6 +1168,9 @@ case "$COMMAND" in
     collection-add)  cmd_collection_add "${ARGS[0]:-}" ;;
     collection-del)  cmd_collection_del "${ARGS[0]:-}" ;;
     collection-list) cmd_collection_list ;;
+    signer-add)      cmd_signer_add ${ARGS[@]+"${ARGS[@]}"} ;;
+    signer-del)      cmd_signer_del "${ARGS[0]:-}" ;;
+    signer-list)     cmd_signer_list ;;
     search)          cmd_search "${ARGS[0]:-}" ;;
     *)               die "unknown command: $COMMAND" ;;
 esac

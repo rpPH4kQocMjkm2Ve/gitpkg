@@ -4,7 +4,7 @@ _gitpkg() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="install update remove list status files inspect verify repo-add repo-del repo-list collection-add collection-del collection-list search"
+    local commands="install update remove list status files inspect verify repo-add repo-del repo-list collection-add collection-del collection-list signer-add signer-del signer-list search"
 
     local cmd="" i
     for ((i = 1; i < cword; i++)); do
@@ -69,10 +69,20 @@ _gitpkg() {
         done < "$_cfile"
     done
 
+    # Signer principals
+    local -a signer_principals=()
+    local _sfile
+    for _sfile in /etc/gitpkg/signers.conf /etc/gitpkg/allowed_signers; do
+        [[ -f "$_sfile" ]] || continue
+        while IFS= read -r line; do
+            [[ -n "$line" && "$line" != \#* ]] && signer_principals+=("${line%% *}")
+        done < "$_sfile"
+    done
+
     case "$cmd" in
         install)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --needed --nodeps" -- "$cur"))
+                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --needed --nodeps --require-sig" -- "$cur"))
             else
                 local -a all=($(printf '%s\n' "${known[@]}" "${pkgs[@]}" | sort -u))
                 COMPREPLY=($(compgen -W "${all[*]}" -- "$cur"))
@@ -80,14 +90,14 @@ _gitpkg() {
             ;;
         update)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-n --dry-run --nodeps" -- "$cur"))
+                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --nodeps --require-sig" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "${pkgs[*]}" -- "$cur"))
             fi
             ;;
         remove)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-n --dry-run -y --yes" -- "$cur"))
+                COMPREPLY=($(compgen -W "-n --dry-run -y --yes --nodeps" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "${pkgs[*]}" -- "$cur"))
             fi
@@ -118,6 +128,11 @@ _gitpkg() {
         collection-del)
             if [[ "$cur" != -* ]]; then
                 COMPREPLY=($(compgen -W "${coll_names[*]}" -- "$cur"))
+            fi
+            ;;
+        signer-del)
+            if [[ "$cur" != -* ]]; then
+                COMPREPLY=($(compgen -W "${signer_principals[*]}" -- "$cur"))
             fi
             ;;
         search)

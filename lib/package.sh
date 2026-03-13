@@ -11,6 +11,55 @@ _FOUND_COLLECTION=""
 _FOUND_WORKDIR=""
 _FOUND_GITDIR=""
 
+# ── Signature verification ─────────────────────────────
+
+_build_signers_file() {
+    local combined
+    combined=$(mktemp /tmp/gitpkg-signers.XXXXXX)
+    {
+        [[ -f "$SIGNERS_DEFAULT" && -r "$SIGNERS_DEFAULT" ]] && grep -v '^\s*#' "$SIGNERS_DEFAULT" | grep -v '^\s*$'
+        [[ -f "$SIGNERS_CONF" && -r "$SIGNERS_CONF" ]] && grep -v '^\s*#' "$SIGNERS_CONF" | grep -v '^\s*$'
+    } > "$combined" 2>/dev/null || true
+    printf '%s' "$combined"
+}
+
+_verify_signature() {
+    local gitdir="$1"
+    local commit_ref="${2:-HEAD}"
+
+    local combined
+    combined=$(_build_signers_file)
+
+    # No keys configured — verification not active
+    if [[ ! -s "$combined" ]]; then
+        rm -f "$combined"
+        return 0
+    fi
+
+    local output rc=0
+    output=$(git -C "$gitdir" \
+        -c gpg.format=ssh \
+        -c "gpg.ssh.allowedSignersFile=${combined}" \
+        verify-commit "$commit_ref" 2>&1) || rc=$?
+
+    rm -f "$combined"
+
+    if [[ $rc -eq 0 ]]; then
+        local signer
+        signer=$(printf '%s\n' "$output" \
+            | sed -n 's/.*Good.*signature for \([^ ]*\).*/\1/p' | head -1)
+        if [[ -n "$signer" ]]; then
+            printf '   Signature: verified (%s)\n' "$signer"
+        else
+            printf '   Signature: verified\n'
+        fi
+        return 0
+    fi
+
+    printf '   WARNING: commit is NOT signed by a trusted key\n' >&2
+    return 1
+}
+
 # ── URL resolution ────────────────────────────────────────
 
 _resolve_urls() {

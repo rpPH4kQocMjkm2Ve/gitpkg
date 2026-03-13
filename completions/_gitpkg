@@ -33,6 +33,19 @@ _gitpkg_collection_names() {
     compadd "$@" -a names
 }
 
+_gitpkg_signer_principals() {
+    local -a principals=()
+    local f
+    for f in /etc/gitpkg/signers.conf /etc/gitpkg/allowed_signers; do
+        [[ -f "$f" ]] || continue
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* ]] && continue
+            principals+=("${line%% *}")
+        done < "$f"
+    done
+    compadd "$@" -a principals
+}
+
 _gitpkg_known_packages() {
     local -a pkgs=()
     # From pkglist
@@ -77,6 +90,9 @@ _gitpkg() {
             collection-add\:"Register a collection repository"
             collection-del\:"Unregister a collection repository"
             collection-list\:"List configured collections"
+            signer-add\:"Add a trusted signing key"
+            signer-del\:"Remove a trusted signing key"
+            signer-list\:"List trusted signing keys"
             search\:"Search known packages"
         ))' \
         '*::arg:->args' \
@@ -91,18 +107,22 @@ _gitpkg() {
                         '--skip-inspect[Skip Makefile review]' \
                         '--needed[Do not reinstall up to date packages]' \
                         '--nodeps[Skip dependency check]' \
+                        '--require-sig[Require trusted commit signature]' \
                         '*:name:_gitpkg_known_packages'
                     ;;
                 update)
                     _arguments \
                         '(-n --dry-run)'{-n,--dry-run}'[Show what would be done]' \
+                        '--skip-inspect[Skip Makefile review]' \
                         '--nodeps[Skip dependency check]' \
+                        '--require-sig[Require trusted commit signature]' \
                         '*:package:_gitpkg_packages'
                     ;;
                 remove)
                     _arguments \
                         '(-n --dry-run)'{-n,--dry-run}'[Show what would be done]' \
                         '(-y --yes)'{-y,--yes}'[Skip confirmation]' \
+                        '--nodeps[Skip dependency check]' \
                         '1:package:_gitpkg_packages'
                     ;;
                 files)
@@ -134,6 +154,15 @@ _gitpkg() {
                 collection-del)
                     _arguments \
                         '1:collection name:_gitpkg_collection_names'
+                    ;;
+                signer-add)
+                    _arguments \
+                        '1:principal:' \
+                        '2:ssh pubkey:'
+                    ;;
+                signer-del)
+                    _arguments \
+                        '1:principal:_gitpkg_signer_principals'
                     ;;
                 search)
                     _arguments \
