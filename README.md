@@ -114,7 +114,7 @@ as a gitpkg package and as a system/AUR package.
 
 - `bash`, `git`, `make`, `find`, `awk`, `sha256sum`, `timeout`
 - `bubblewrap` (`bwrap`)
-- [verify-lib](https://gitlab.com/fkzys/verify-lib)
+- [`verify-lib`](https://gitlab.com/fkzys/verify-lib)
 
 ## Package requirements
 
