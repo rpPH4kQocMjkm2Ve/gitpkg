@@ -164,6 +164,45 @@ _check_package_deps() {
     return $missing
 }
 
+# Check if any installed package depends on the given package
+# Prints names of dependent packages to stdout
+# Returns 0 if no dependents, 1 if dependents exist
+_check_reverse_deps() {
+    local name="$1"
+    local -a dependents=()
+    local d
+    for d in "${DBDIR}"/*/; do
+        [[ -d "$d" ]] || continue
+        local pkg
+        pkg=$(basename "$d")
+        [[ "$pkg" == "$name" ]] && continue
+
+        # Prefer dbdir copy (stored at install time)
+        local depsfile="${d}depends"
+        if [[ ! -f "$depsfile" ]]; then
+            # Fallback: source tree for packages installed before this feature
+            if [[ -f "${d}collection" ]]; then
+                local coll
+                coll=$(cat "${d}collection")
+                depsfile="${COLLECTIONSDIR}/${coll}/${pkg}/depends"
+            else
+                depsfile="${SRCDIR}/${pkg}/depends"
+            fi
+        fi
+
+        [[ -f "$depsfile" ]] || continue
+        if grep -qxF "gitpkg:${name}" "$depsfile" 2>/dev/null; then
+            dependents+=("$pkg")
+        fi
+    done
+
+    if [[ ${#dependents[@]} -gt 0 ]]; then
+        printf '%s\n' "${dependents[@]}"
+        return 1
+    fi
+    return 0
+}
+
 # ── Clone ─────────────────────────────────────────────────
 
 _clone() {
@@ -257,6 +296,11 @@ _stage_and_deploy() {
             _backup_files["${_bline#/}"]=1
         done < "${workdir}/backup"
         cp "${workdir}/backup" "${dbdir}/backup"
+    fi
+
+    # Store depends file for reverse dependency checking on removal
+    if [[ -f "${workdir}/depends" ]]; then
+        cp "${workdir}/depends" "${dbdir}/depends"
     fi
 
     # ── Dry run ──

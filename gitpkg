@@ -47,7 +47,7 @@ Options:
     --fix            Auto-repair permission anomalies (verify)
     --skip-inspect   Skip Makefile review (install)
     --needed         Do not reinstall up to date packages
-    --nodeps         Skip dependency check (install, update)
+    --nodeps         Skip dependency check (install, update, remove)
     -h, --help       Show this help
     -V, --version    Show version
 
@@ -597,6 +597,7 @@ _update_collection_package() {
 cmd_remove() {
     local dry_run="$1"; shift
     local yes="$1"; shift
+    local nodeps="$1"; shift
     local name="${1:-}"
 
     [[ -n "$name" ]]            || die "usage: gitpkg remove <name>"
@@ -608,6 +609,31 @@ cmd_remove() {
     fi
 
     acquire_lock
+
+    # ── Reverse dependency check ──
+    local rdeps_confirmed=0
+    if [[ "$nodeps" -eq 0 ]]; then
+        local -a rdeps=()
+        mapfile -t rdeps < <(_check_reverse_deps "$name")
+        if [[ ${#rdeps[@]} -gt 0 ]]; then
+            printf ':: The following installed packages depend on %s:\n' "$name"
+            local _rd
+            for _rd in "${rdeps[@]}"; do
+                printf '     %s\n' "$_rd"
+            done
+            echo ""
+            printf '   Removing %s may break these packages.\n' "$name"
+
+            if [[ "$dry_run" -eq 1 ]]; then
+                printf '   Use --nodeps to skip this check.\n'
+                # fall through to dry-run listing below
+            else
+                read -rp "   Continue anyway? [y/N] " answer
+                [[ "$answer" =~ ^[Yy] ]] || { echo "Aborted."; exit 0; }
+                rdeps_confirmed=1
+            fi
+        fi
+    fi
 
     if [[ "$dry_run" -eq 1 ]]; then
         printf 'Would remove %s:\n' "$name"
@@ -633,7 +659,7 @@ cmd_remove() {
         return
     fi
 
-    if [[ "$yes" -eq 0 ]]; then
+    if [[ "$yes" -eq 0 && "$rdeps_confirmed" -eq 0 ]]; then
         local file_count=0
         [[ -f "${DBDIR}/${name}/files" ]] && file_count=$(wc -l < "${DBDIR}/${name}/files")
         printf 'Will remove %s (%d files)\n' "$name" "$file_count"
@@ -1001,7 +1027,7 @@ done
 case "$COMMAND" in
     install)         cmd_install "$DRY_RUN" "$SKIP_INSPECT" "$NEEDED" "$NODEPS" ${ARGS[@]+"${ARGS[@]}"} ;;
     update)          cmd_update "$DRY_RUN" "$SKIP_INSPECT" "$NODEPS" ${ARGS[@]+"${ARGS[@]}"} ;;
-    remove)          cmd_remove "$DRY_RUN" "$YES" "${ARGS[0]:-}" ;;
+    remove)          cmd_remove "$DRY_RUN" "$YES" "$NODEPS" "${ARGS[0]:-}" ;;
     list)            cmd_list ;;
     status)          cmd_status ;;
     files)           cmd_files "${ARGS[0]:-}" ;;
