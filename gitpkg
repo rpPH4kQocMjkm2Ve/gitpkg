@@ -51,7 +51,7 @@ Options:
     --skip-inspect   Skip Makefile review (install, update)
     --needed         Do not reinstall up to date packages
     --nodeps         Skip dependency check (install, update, remove)
-    --require-sig    Require trusted commit signature (install, update)
+    --nosig          Skip commit signature verification (install, update)
     -h, --help       Show this help
     -V, --version    Show version
 
@@ -59,7 +59,6 @@ Environment:
     GITPKG_CLONE_TIMEOUT     Clone timeout in seconds (default: 120)
     GITPKG_FETCH_TIMEOUT     Fetch timeout in seconds (default: 30)
     GITPKG_LSREMOTE_TIMEOUT  Status check timeout in seconds (default: 15)
-    GITPKG_REQUIRE_SIG       Require signed commits (0/1, default: 0)
 
 Security:
     Build and install steps run inside a bubblewrap sandbox with
@@ -68,11 +67,10 @@ Security:
     staged, validated, then deployed. Always review the Makefile.
 
     Signatures:
-    If /etc/gitpkg/allowed_signers or signers.conf contains SSH public
-    keys, gitpkg verifies commit signatures before install/update.
-    Default keys ship in allowed_signers. Add your own with:
-      sudo gitpkg signer-add <principal> <ssh-pubkey>
-    Use --require-sig to abort on unsigned or untrusted commits.
+        If /etc/gitpkg/allowed_signers or signers.conf contains SSH public
+        keys, gitpkg requires valid commit signatures for install/update.
+        Unsigned or untrusted commits are rejected.
+        Use --nosig to bypass signature verification.
 
 Collections:
     A collection is a single git repository containing multiple packages
@@ -166,7 +164,7 @@ cmd_install() {
     local skip_inspect="$1"; shift
     local needed="$1"; shift
     local nodeps="$1"; shift
-    local require_sig="$1"; shift
+    local nosig="$1"; shift
 
     [[ $# -gt 0 ]] || die "usage: gitpkg install <name>... [--needed] [--skip-inspect] [-n]"
     [[ $EUID -eq 0 ]] || die "must run as root"
@@ -176,7 +174,7 @@ cmd_install() {
 
     local name
     for name in "$@"; do
-        _install_single "$name" "$dry_run" "$skip_inspect" "$needed" "$nodeps" "$require_sig"
+        _install_single "$name" "$dry_run" "$skip_inspect" "$needed" "$nodeps" "$nosig"
     done
 }
 
@@ -186,7 +184,7 @@ _install_single() {
     local skip_inspect="$3"
     local needed="$4"
     local nodeps="$5"
-    local require_sig="$6"
+    local nosig="$6"
 
     local dbdir="${DBDIR}/${name}"
     local srcdir="${SRCDIR}/${name}"
@@ -262,12 +260,10 @@ _install_single() {
     fi
 
     # ── Signature verification ──
-    if [[ "$dry_run" -eq 0 ]]; then
+    if [[ "$dry_run" -eq 0 && "$nosig" -eq 0 ]]; then
         if ! _verify_signature "$gitdir"; then
-            if [[ "$require_sig" -eq 1 ]]; then
-                [[ "$from_collection" -eq 0 && -d "$srcdir" ]] && rm -rf "$srcdir"
-                die "unsigned/untrusted commit for ${name} — aborting (--require-sig)"
-            fi
+            [[ "$from_collection" -eq 0 && -d "$srcdir" ]] && rm -rf "$srcdir"
+            die "unsigned/untrusted commit for ${name} — use --nosig to bypass"
         fi
     fi
 
@@ -351,7 +347,7 @@ cmd_update() {
     local dry_run="$1"; shift
     local skip_inspect="$1"; shift
     local nodeps="$1"; shift
-    local require_sig="$1"; shift
+    local nosig="$1"; shift
 
     declare -gA _FETCHED_COLLECTIONS=()
 
@@ -360,7 +356,7 @@ cmd_update() {
         for d in "${DBDIR}"/*/; do
             [[ -d "$d" ]] || continue
             found=1
-            _update_single "$(basename "$d")" "$dry_run" "$skip_inspect" "$nodeps" "$require_sig"
+            _update_single "$(basename "$d")" "$dry_run" "$skip_inspect" "$nodeps" "$nosig"
         done
         [[ $found -eq 1 ]] || echo "No packages installed."
         return
@@ -368,7 +364,7 @@ cmd_update() {
 
     local name
     for name in "$@"; do
-        _update_single "$name" "$dry_run" "$skip_inspect" "$nodeps" "$require_sig"
+        _update_single "$name" "$dry_run" "$skip_inspect" "$nodeps" "$nosig"
     done
 }
 
@@ -377,7 +373,7 @@ _update_single() {
     local dry_run="${2:-0}"
     local skip_inspect="${3:-0}"
     local nodeps="${4:-0}"
-    local require_sig="${5:-0}"
+    local nosig="${5:-0}"
     local dbdir="${DBDIR}/${name}"
 
     [[ -d "$dbdir" ]] || die "${name} is not installed"
@@ -395,9 +391,9 @@ _update_single() {
     [[ -f "${dbdir}/collection" ]] && collection=$(cat "${dbdir}/collection")
 
     if [[ -n "$collection" ]]; then
-        _update_collection_package "$name" "$collection" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps" "$require_sig"
+        _update_collection_package "$name" "$collection" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps" "$nosig"
     else
-        _update_standalone_package "$name" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps" "$require_sig"
+        _update_standalone_package "$name" "$old_commit" "$dry_run" "$skip_inspect" "$nodeps" "$nosig"
     fi
 }
 
@@ -407,7 +403,7 @@ _update_standalone_package() {
     local dry_run="$3"
     local skip_inspect="$4"
     local nodeps="$5"
-    local require_sig="$6"
+    local nosig="$6"
     local srcdir="${SRCDIR}/${name}"
     local dbdir="${DBDIR}/${name}"
 
@@ -462,11 +458,9 @@ _update_standalone_package() {
     fi
 
     # ── Signature verification ──
-    if [[ "$dry_run" -eq 0 ]]; then
+    if [[ "$dry_run" -eq 0 && "$nosig" -eq 0 ]]; then
         if ! _verify_signature "$srcdir" "origin/${branch}"; then
-            if [[ "$require_sig" -eq 1 ]]; then
-                die "unsigned/untrusted commit for ${name} — aborting (--require-sig)"
-            fi
+            die "unsigned/untrusted commit for ${name} — use --nosig to bypass"
         fi
     fi
 
@@ -514,7 +508,7 @@ _update_collection_package() {
     local dry_run="$4"
     local skip_inspect="$5"
     local nodeps="$6"
-    local require_sig="$7"
+    local nosig="$7"
     local dbdir="${DBDIR}/${name}"
     local colldir="${COLLECTIONSDIR}/${collection}"
 
@@ -589,11 +583,9 @@ _update_collection_package() {
     fi
 
     # ── Signature verification ──
-    if [[ "$dry_run" -eq 0 ]]; then
+    if [[ "$dry_run" -eq 0 && "$nosig" -eq 0 ]]; then
         if ! _verify_signature "$colldir" "origin/${branch}"; then
-            if [[ "$require_sig" -eq 1 ]]; then
-                die "unsigned/untrusted commit for ${name} (collection: ${collection}) — aborting (--require-sig)"
-            fi
+            die "unsigned/untrusted commit for ${name} (collection: ${collection}) — use --nosig to bypass"
         fi
     fi
 
@@ -1135,7 +1127,7 @@ FIX=0
 SKIP_INSPECT=0
 NEEDED=0
 NODEPS=0
-REQUIRE_SIG="${GITPKG_REQUIRE_SIG:-0}"
+NOSIG=0
 ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -1146,7 +1138,7 @@ while [[ $# -gt 0 ]]; do
         --skip-inspect)  SKIP_INSPECT=1; shift ;;
         --needed)        NEEDED=1; shift ;;
         --nodeps)        NODEPS=1; shift ;;
-        --require-sig)   REQUIRE_SIG=1; shift ;;
+        --nosig)         NOSIG=1; shift ;;
         -h|--help)       show_help ;;
         -*)              die "unknown option: $1" ;;
         *)               ARGS+=("$1"); shift ;;
@@ -1154,8 +1146,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$COMMAND" in
-    install)         cmd_install "$DRY_RUN" "$SKIP_INSPECT" "$NEEDED" "$NODEPS" "$REQUIRE_SIG" ${ARGS[@]+"${ARGS[@]}"} ;;
-    update)          cmd_update "$DRY_RUN" "$SKIP_INSPECT" "$NODEPS" "$REQUIRE_SIG" ${ARGS[@]+"${ARGS[@]}"} ;;
+    install)         cmd_install "$DRY_RUN" "$SKIP_INSPECT" "$NEEDED" "$NODEPS" "$NOSIG" ${ARGS[@]+"${ARGS[@]}"} ;;
+    update)          cmd_update "$DRY_RUN" "$SKIP_INSPECT" "$NODEPS" "$NOSIG" ${ARGS[@]+"${ARGS[@]}"} ;;
     remove)          cmd_remove "$DRY_RUN" "$YES" "$NODEPS" "${ARGS[0]:-}" ;;
     list)            cmd_list ;;
     status)          cmd_status ;;

@@ -82,7 +82,7 @@ _gitpkg() {
     case "$cmd" in
         install)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --needed --nodeps --require-sig" -- "$cur"))
+                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --needed --nodeps --nosig" -- "$cur"))
             else
                 local -a all=($(printf '%s\n' "${known[@]}" "${pkgs[@]}" | sort -u))
                 COMPREPLY=($(compgen -W "${all[*]}" -- "$cur"))
@@ -90,7 +90,7 @@ _gitpkg() {
             ;;
         update)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --nodeps --require-sig" -- "$cur"))
+                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --nodeps --nosig" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "${pkgs[*]}" -- "$cur"))
             fi
