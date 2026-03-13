@@ -1,6 +1,6 @@
 # /usr/lib/gitpkg/common.sh — constants, validation, locking, utility helpers
 
-readonly VERSION="0.7.4"
+readonly VERSION="0.7.5"
 readonly DBDIR="/var/lib/gitpkg"
 readonly SRCDIR="/var/cache/gitpkg"
 readonly COLLECTIONSDIR="${SRCDIR}/_collections"
@@ -197,4 +197,3 @@ _is_system_managed() {
     fi
     return 1
 }
-
