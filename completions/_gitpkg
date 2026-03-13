@@ -108,6 +108,9 @@ _gitpkg() {
                         '--needed[Do not reinstall up to date packages]' \
                         '--nodeps[Skip dependency check]' \
                         '--nosig[Skip commit signature verification]' \
+                        '--clone-timeout[Clone timeout in seconds]:seconds:' \
+                        '--fetch-timeout[Fetch timeout in seconds]:seconds:' \
+                        '--status-timeout[Status check timeout in seconds]:seconds:' \
                         '*:name:_gitpkg_known_packages'
                     ;;
                 update)
@@ -116,6 +119,9 @@ _gitpkg() {
                         '--skip-inspect[Skip Makefile review]' \
                         '--nodeps[Skip dependency check]' \
                         '--nosig[Skip commit signature verification]' \
+                        '--clone-timeout[Clone timeout in seconds]:seconds:' \
+                        '--fetch-timeout[Fetch timeout in seconds]:seconds:' \
+                        '--status-timeout[Status check timeout in seconds]:seconds:' \
                         '*:package:_gitpkg_packages'
                     ;;
                 remove)
@@ -124,6 +130,10 @@ _gitpkg() {
                         '(-y --yes)'{-y,--yes}'[Skip confirmation]' \
                         '--nodeps[Skip dependency check]' \
                         '1:package:_gitpkg_packages'
+                    ;;
+                status)
+                    _arguments \
+                        '--status-timeout[Status check timeout in seconds]:seconds:'
                     ;;
                 files)
                     _arguments \

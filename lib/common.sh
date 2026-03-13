@@ -13,9 +13,13 @@ readonly COLLECTIONS_CONF="${CONFDIR}/collections.conf"
 readonly COLLECTIONS_LIST="${CONFDIR}/collections"
 readonly SIGNERS_DEFAULT="${CONFDIR}/allowed_signers"
 readonly SIGNERS_CONF="${CONFDIR}/signers.conf"
-readonly CLONE_TIMEOUT="${GITPKG_CLONE_TIMEOUT:-120}"
-readonly FETCH_TIMEOUT="${GITPKG_FETCH_TIMEOUT:-30}"
-readonly LSREMOTE_TIMEOUT="${GITPKG_LSREMOTE_TIMEOUT:-15}"
+readonly GITPKG_CONF="${CONFDIR}/gitpkg.conf"
+
+# Defaults (overridden by config, then by flags)
+CLONE_TIMEOUT=120
+FETCH_TIMEOUT=30
+STATUS_TIMEOUT=15
+
 readonly MAX_STATUS_PARALLEL=8
 
 readonly -a PROTECTED_DIRS=(
@@ -174,6 +178,52 @@ _ensure_conf() {
         chmod 644 "$SIGNERS_CONF"
     fi
 }
+
+# ── Config loading ─────────────────────────────────────
+
+_load_config() {
+    [[ -f "$GITPKG_CONF" ]] || return 0
+
+    local owner
+    owner=$(stat -c %u "$GITPKG_CONF" 2>/dev/null)
+    if [[ "$owner" != "0" ]]; then
+        printf 'WARN: %s not owned by root — ignoring\n' "$GITPKG_CONF" >&2
+        return 0
+    fi
+
+    local -a allowed=(CLONE_TIMEOUT FETCH_TIMEOUT STATUS_TIMEOUT)
+
+    while IFS='=' read -r key value; do
+        key="${key// /}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        value="${value%%#*}"
+        value="${value%"${value##*[![:space:]]}"}"
+
+        [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+
+        local valid=0 a
+        for a in "${allowed[@]}"; do
+            [[ "$key" == "$a" ]] && { valid=1; break; }
+        done
+
+        if [[ $valid -eq 1 ]]; then
+            value="${value#\"}"
+            value="${value%\"}"
+            value="${value#\'}"
+            value="${value%\'}"
+            [[ "$value" =~ ^[0-9]+$ ]] || {
+                printf 'WARN: %s must be numeric, ignored\n' "$key" >&2
+                continue
+            }
+            printf -v "$key" '%s' "$value"
+        else
+            printf 'WARN: unknown config key ignored: %s\n' "$key" >&2
+        fi
+    done < "$GITPKG_CONF"
+}
+
+_load_config
 
 _safe_read_commit() {
     local commitfile="$1"
