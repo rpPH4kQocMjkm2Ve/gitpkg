@@ -329,7 +329,7 @@ cmd_update() {
     local nodeps="$1"; shift
 
     # Reset the collection fetch dedup cache for this run
-    _FETCHED_COLLECTIONS=()
+    declare -gA _FETCHED_COLLECTIONS=()
 
     if [[ $# -eq 0 ]]; then
         local found=0
