@@ -490,6 +490,10 @@ _update_standalone_package() {
     printf ':: Updating %s [%s -> %s]...\n' "$name" "${old_commit:0:8}" "${new_commit:0:8}"
     git -C "$srcdir" reset --hard "origin/${branch}" &>/dev/null
 
+    # Sync metadata to dbdir (keeps database self-contained)
+    [[ -f "${workdir}/backup" ]]  && cp "${workdir}/backup"  "${dbdir}/backup"
+    [[ -f "${workdir}/depends" ]] && cp "${workdir}/depends" "${dbdir}/depends"
+
     if [[ "$nodeps" -eq 0 ]] && ! _check_package_deps "$srcdir"; then
         echo ""
         read -rp "   Dependencies missing. Continue anyway? [y/N] " answer
@@ -619,6 +623,10 @@ _update_collection_package() {
     if [[ ! -f "${workdir}/Makefile" ]]; then
         die "${name}: Makefile disappeared from collection ${collection}"
     fi
+
+    # Sync metadata to dbdir (keeps database self-contained)
+    [[ -f "${workdir}/backup" ]]  && cp "${workdir}/backup"  "${dbdir}/backup"
+    [[ -f "${workdir}/depends" ]] && cp "${workdir}/depends" "${dbdir}/depends"
 
     if [[ "$nodeps" -eq 0 ]] && ! _check_package_deps "$workdir"; then
         echo ""
