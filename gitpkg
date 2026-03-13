@@ -19,8 +19,8 @@ _src "${LIBDIR}/package.sh"
 # ── Help ──────────────────────────────────────────────────
 
 show_help() {
-    cat << 'EOF'
-gitpkg v0.7.1 — git + make package manager
+    cat << EOF
+gitpkg v${VERSION} — git + make package manager
 
 Usage: gitpkg <command> [options] [args]
 
