@@ -82,7 +82,7 @@ _gitpkg() {
     case "$cmd" in
         install)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --needed --nodeps --nosig" -- "$cur"))
+                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --needed --nodeps --nosig --clone-timeout --fetch-timeout --status-timeout" -- "$cur"))
             else
                 local -a all=($(printf '%s\n' "${known[@]}" "${pkgs[@]}" | sort -u))
                 COMPREPLY=($(compgen -W "${all[*]}" -- "$cur"))
@@ -90,7 +90,7 @@ _gitpkg() {
             ;;
         update)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --nodeps --nosig" -- "$cur"))
+                COMPREPLY=($(compgen -W "-n --dry-run --skip-inspect --nodeps --nosig --clone-timeout --fetch-timeout --status-timeout" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "${pkgs[*]}" -- "$cur"))
             fi
@@ -100,6 +100,11 @@ _gitpkg() {
                 COMPREPLY=($(compgen -W "-n --dry-run -y --yes --nodeps" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "${pkgs[*]}" -- "$cur"))
+            fi
+            ;;
+        status)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--status-timeout" -- "$cur"))
             fi
             ;;
         files)

@@ -52,13 +52,11 @@ Options:
     --needed         Do not reinstall up to date packages
     --nodeps         Skip dependency check (install, update, remove)
     --nosig          Skip commit signature verification (install, update)
+    --clone-timeout <s>  Clone timeout in seconds (default: 120)
+    --fetch-timeout <s>  Fetch timeout in seconds (default: 30)
+    --status-timeout <s> Status check timeout in seconds (default: 15)
     -h, --help       Show this help
     -V, --version    Show version
-
-Environment:
-    GITPKG_CLONE_TIMEOUT     Clone timeout in seconds (default: 120)
-    GITPKG_FETCH_TIMEOUT     Fetch timeout in seconds (default: 30)
-    GITPKG_LSREMOTE_TIMEOUT  Status check timeout in seconds (default: 15)
 
 Security:
     Build and install steps run inside a bubblewrap sandbox with
@@ -71,6 +69,9 @@ Security:
         keys, gitpkg requires valid commit signatures for install/update.
         Unsigned or untrusted commits are rejected.
         Use --nosig to bypass signature verification.
+
+Configuration:
+    /etc/gitpkg/gitpkg.conf — timeout settings. Flags override config values.
 
 Collections:
     A collection is a single git repository containing multiple packages
@@ -753,7 +754,7 @@ cmd_status() {
                 printf '%-28s ? %s%s (no URL recorded)\n' "$name" "${commit:0:12}" "$coll_marker"
             else
                 local remote=""
-                remote=$(timeout "$LSREMOTE_TIMEOUT" git ls-remote "$origin_url" HEAD 2>/dev/null | awk '{print $1; exit}')
+                remote=$(timeout "$STATUS_TIMEOUT" git ls-remote "$origin_url" HEAD 2>/dev/null | awk '{print $1; exit}')
                 if [[ -z "$remote" ]]; then
                     printf '%-28s ? %s%s (fetch failed)\n' "$name" "${commit:0:12}" "$coll_marker"
                 elif [[ "$commit" == "$remote" ]]; then
@@ -1139,6 +1140,15 @@ while [[ $# -gt 0 ]]; do
         --needed)        NEEDED=1; shift ;;
         --nodeps)        NODEPS=1; shift ;;
         --nosig)         NOSIG=1; shift ;;
+        --clone-timeout)
+            [[ -n "${2:-}" && "$2" =~ ^[0-9]+$ ]] || die "--clone-timeout requires a numeric value"
+            CLONE_TIMEOUT="$2"; shift 2 ;;
+        --fetch-timeout)
+            [[ -n "${2:-}" && "$2" =~ ^[0-9]+$ ]] || die "--fetch-timeout requires a numeric value"
+            FETCH_TIMEOUT="$2"; shift 2 ;;
+        --status-timeout)
+            [[ -n "${2:-}" && "$2" =~ ^[0-9]+$ ]] || die "--status-timeout requires a numeric value"
+            STATUS_TIMEOUT="$2"; shift 2 ;;
         -h|--help)       show_help ;;
         -*)              die "unknown option: $1" ;;
         *)               ARGS+=("$1"); shift ;;

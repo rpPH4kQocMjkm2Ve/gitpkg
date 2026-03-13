@@ -12,6 +12,7 @@ install:
 	install -Dm644 pkglist $(DESTDIR)/etc/gitpkg/pkglist
 	install -Dm644 collections $(DESTDIR)/etc/gitpkg/collections
 	install -Dm644 allowed_signers $(DESTDIR)/etc/gitpkg/allowed_signers
+	install -Dm644 gitpkg.conf $(DESTDIR)/etc/gitpkg/gitpkg.conf
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/gitpkg
@@ -22,3 +23,4 @@ uninstall:
 	rm -f $(DESTDIR)/etc/gitpkg/pkglist
 	rm -f $(DESTDIR)/etc/gitpkg/collections
 	rm -f $(DESTDIR)/etc/gitpkg/allowed_signers
+	rm -f $(DESTDIR)/etc/gitpkg/gitpkg.conf
