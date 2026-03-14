@@ -1,0 +1,19 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: |
+          shellcheck -s bash -e SC1090,SC1091,SC2034,SC2115,SC2153,SC2178 gitpkg
+          shellcheck -s bash -e SC1090,SC1091,SC1113,SC2034,SC2096,SC2153,SC2178 lib/common.sh
+          shellcheck -s bash -e SC1090,SC1091,SC1113,SC2034,SC2096,SC2153,SC2178 lib/sandbox.sh
+          shellcheck -s bash -e SC1090,SC1091,SC1113,SC2034,SC2096,SC2153,SC2178 lib/package.sh
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash tests/test.sh
