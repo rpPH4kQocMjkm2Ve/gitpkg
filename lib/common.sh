@@ -1,6 +1,6 @@
 # /usr/lib/gitpkg/common.sh — constants, validation, locking, utility helpers
 
-readonly VERSION="0.7.7"
+readonly VERSION="0.7.8"
 readonly DBDIR="/var/lib/gitpkg"
 readonly SRCDIR="/var/cache/gitpkg"
 readonly COLLECTIONSDIR="${SRCDIR}/_collections"
