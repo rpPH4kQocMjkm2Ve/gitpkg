@@ -144,7 +144,7 @@ _commit "v2"
 git -C "$WORK" push &>/dev/null
 V2=$(git -C "$WORK" rev-parse HEAD)
 
-if output=$(gitpkg update "$PKG" --nosig --skip-inspect 2>&1); then
+if output=$(gitpkg update "$PKG" --nosig --skip-inspect --nodeps 2>&1); then
     ok "update exited 0"
 else
     fail "update crashed (rc=$?): $(echo "$output" | tail -1)"
@@ -199,7 +199,7 @@ _commit "v3"
 git -C "$WORK" push &>/dev/null
 V3=$(git -C "$WORK" rev-parse HEAD)
 
-output=$(gitpkg update "$PKG" --nosig --skip-inspect -n 2>&1)
+output=$(gitpkg update "$PKG" --nosig --skip-inspect --nodeps -n 2>&1)
 echo "$output" | grep -qi "would update" \
     && ok "dry-run shows 'would update'" \
     || fail "dry-run message wrong: ${output}"
@@ -220,7 +220,7 @@ out=$("/usr/bin/${PKG}" 2>&1 || true)
 
 printf '\n── Test 4: real update to v3 ──────────────────\n'
 
-if gitpkg update "$PKG" --nosig --skip-inspect &>/dev/null; then
+if gitpkg update "$PKG" --nosig --skip-inspect --nodeps &>/dev/null; then
     ok "v3 update exited 0"
 else
     fail "v3 update failed"
@@ -248,7 +248,7 @@ printf '#!/bin/sh\necho v4\n' > "${WORK}/mybin"
 _commit "v4"
 git -C "$WORK" push &>/dev/null
 
-if gitpkg update "$PKG" --nosig --skip-inspect &>/dev/null; then
+if gitpkg update "$PKG" --nosig --skip-inspect --nodeps &>/dev/null; then
     ok "re-clone + update exited 0"
 else
     fail "re-clone + update failed"
