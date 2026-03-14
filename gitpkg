@@ -491,8 +491,8 @@ _update_standalone_package() {
     git -C "$srcdir" reset --hard "origin/${branch}" &>/dev/null
 
     # Sync metadata to dbdir (keeps database self-contained)
-    [[ -f "${workdir}/backup" ]]  && cp "${workdir}/backup"  "${dbdir}/backup"
-    [[ -f "${workdir}/depends" ]] && cp "${workdir}/depends" "${dbdir}/depends"
+    [[ -f "${srcdir}/backup" ]]  && cp "${srcdir}/backup"  "${dbdir}/backup"
+    [[ -f "${srcdir}/depends" ]] && cp "${srcdir}/depends" "${dbdir}/depends"
 
     if [[ "$nodeps" -eq 0 ]] && ! _check_package_deps "$srcdir"; then
         echo ""
