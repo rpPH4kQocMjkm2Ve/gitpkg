@@ -13,9 +13,10 @@ section() { echo ""; echo "── $1 ──"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Source common.sh directly (skip verify-lib)
-. "${PROJECT_ROOT}/lib/common.sh"
-. "${PROJECT_ROOT}/lib/sandbox.sh"
+# Source libraries for unit testing; skip auto-init (no config, no trap, no lock)
+_GITPKG_NO_INIT=1
+source "${PROJECT_ROOT}/lib/common.sh"
+source "${PROJECT_ROOT}/lib/sandbox.sh"
 
 TMPDIR_TEST=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
