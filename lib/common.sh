@@ -197,7 +197,7 @@ _load_config() {
         key="${key// /}"
         value="${value#"${value%%[![:space:]]*}"}"
         value="${value%"${value##*[![:space:]]}"}"
-        value="${value%%#*}"
+        value="${value%% #*}"
         value="${value%"${value##*[![:space:]]}"}"
 
         [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
