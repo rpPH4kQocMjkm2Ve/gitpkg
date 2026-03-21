@@ -4,7 +4,8 @@ readonly VERSION="0.7.8"
 readonly DBDIR="/var/lib/gitpkg"
 readonly SRCDIR="/var/cache/gitpkg"
 readonly COLLECTIONSDIR="${SRCDIR}/_collections"
-readonly LOCK_FILE="/var/lock/gitpkg.lock"
+readonly LOCK_DIR="/run/gitpkg"
+readonly LOCK_FILE="${LOCK_DIR}/gitpkg.lock"
 readonly CONFDIR="/etc/gitpkg"
 readonly REPOS_CONF="${CONFDIR}/repos.conf"
 readonly MIRRORLIST="${CONFDIR}/mirrorlist"
@@ -60,9 +61,7 @@ _check_deps() {
 LOCK_ACQUIRED=0
 
 acquire_lock() {
-    local lock_dir
-    lock_dir=$(dirname "$LOCK_FILE")
-    [[ -d "$lock_dir" ]] || mkdir -p "$lock_dir"
+    [[ -d "$LOCK_DIR" ]] || mkdir -p "$LOCK_DIR"
 
     exec 9>"$LOCK_FILE"
     if ! flock -n 9; then
