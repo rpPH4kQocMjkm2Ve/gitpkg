@@ -89,9 +89,6 @@ cleanup() {
     fi
 }
 
-trap cleanup EXIT
-trap 'exit 1' TERM INT HUP
-
 # ── Path validation ───────────────────────────────────────
 
 _validate_path() {
@@ -222,7 +219,15 @@ _load_config() {
     done < "$GITPKG_CONF"
 }
 
-_load_config
+# ── Auto-initialization ───────────────────────────────────
+# Skipped when _GITPKG_NO_INIT is set (e.g. in test harnesses
+# that source common.sh only for constants and helpers).
+
+if [[ -z "${_GITPKG_NO_INIT:-}" ]]; then
+    trap cleanup EXIT
+    trap 'exit 1' TERM INT HUP
+    _load_config
+fi
 
 _safe_read_commit() {
     local commitfile="$1"
