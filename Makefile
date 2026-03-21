@@ -1,4 +1,4 @@
-.PHONY: install uninstall reinstall install-conf
+.PHONY: install uninstall reinstall install-conf test
 
 PREFIX     = /usr
 SYSCONFDIR = /etc
@@ -51,3 +51,6 @@ install-conf:
 		install -Dm644 "etc/gitpkg/$$f" "$(DESTDIR)$(CONFDIR)/$$f"; \
 	done
 	@echo "All configs force-installed."
+
+test:
+	bash tests/test.sh
