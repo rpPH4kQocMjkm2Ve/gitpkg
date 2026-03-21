@@ -1,8 +1,5 @@
 # /usr/lib/gitpkg/package.sh — URL resolution, cloning, staging, deploy, verification
 
-# Global tracking for collection fetches during batch updates
-declare -A _FETCHED_COLLECTIONS=()
-
 # Clone result globals
 CLONE_SUCCESS_URL=""
 
