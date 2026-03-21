@@ -103,7 +103,7 @@ _validate_path() {
     if [[ "$filepath" == /* ]]; then
         return 1
     fi
-    if [[ "$filepath" =~ \.\. ]]; then
+    if [[ "$filepath" =~ (^|/)\.\.(/|$) ]]; then
         return 1
     fi
     if [[ "$filepath" == *$'\n'* ]]; then
@@ -140,7 +140,7 @@ _validate_symlinks() {
         fi
         local target
         target=$(readlink "$staged")
-        if [[ "$target" =~ \.\. ]]; then
+        if [[ "$target" =~ (^|/)\.\.(/|$) ]]; then
             printf 'REJECTED: symlink with traversal: %s -> %s\n' "$f" "$target" >&2
             bad=1
         fi
