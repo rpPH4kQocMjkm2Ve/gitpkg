@@ -1,4 +1,4 @@
-.PHONY: install uninstall reinstall install-conf test
+.PHONY: install uninstall reinstall install-conf test test-root
 
 PREFIX     = /usr
 SYSCONFDIR = /etc
@@ -54,3 +54,6 @@ install-conf:
 
 test:
 	bash tests/test.sh
+
+test-root:
+	sudo bash tests/test_integration.sh
