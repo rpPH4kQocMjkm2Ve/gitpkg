@@ -1,25 +1,8 @@
 #!/usr/bin/env bash
-set -uo pipefail
+# tests/test.sh — Unit tests for gitpkg library functions
+# Run: bash tests/test.sh
 
-PASS=0
-FAIL=0
-TESTS=0
-
-ok()   { PASS=$((PASS + 1)); TESTS=$((TESTS + 1)); echo "  ✓ $1"; }
-fail() { FAIL=$((FAIL + 1)); TESTS=$((TESTS + 1)); echo "  ✗ $1"; }
-
-section() { echo ""; echo "── $1 ──"; }
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# Source libraries for unit testing; skip auto-init (no config, no trap, no lock)
-_GITPKG_NO_INIT=1
-source "${PROJECT_ROOT}/lib/common.sh"
-source "${PROJECT_ROOT}/lib/sandbox.sh"
-
-TMPDIR_TEST=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_TEST"' EXIT
+source "$(dirname "${BASH_SOURCE[0]}")/test_harness.sh"
 
 # ════════════════════════════════════════════════════════
 # _validate_path
@@ -265,20 +248,23 @@ _has_make_target "$MAKEDIR" build   && fail "build found in install-only" || ok 
 
 section "_is_system_managed"
 
-# bash should be system-managed on any distro
+# Mock pacman to report "bash" as installed, nothing else
+make_mock_in "${MOCK_BIN:-${TMPDIR_TEST}/mock_bin}" pacman '
+    case "$1" in
+        -Qq) [[ "$2" == "bash" ]] && echo "bash" && exit 0 ;;
+    esac
+    exit 1'
+
+_saved_path="$PATH"
+PATH="${MOCK_BIN:-${TMPDIR_TEST}/mock_bin}:${PATH}"
+
+# bash should be system-managed (mocked)
 _is_system_managed "bash" && ok "bash is system-managed" || fail "bash not system-managed"
 
 # nonexistent package
 _is_system_managed "definitely-not-a-real-package-xyz-12345" \
     && fail "fake package is system-managed" || ok "fake package not system-managed"
 
-# ════════════════════════════════════════════════════════
-# Results
-# ════════════════════════════════════════════════════════
+PATH="$_saved_path"
 
-echo ""
-echo "════════════════════════════════════"
-echo " Results: $PASS passed, $FAIL failed (total: $TESTS)"
-echo "════════════════════════════════════"
-
-[[ $FAIL -eq 0 ]] && exit 0 || exit 1
+summary
