@@ -243,6 +243,55 @@ _has_make_target "$MAKEDIR" install && ok "install-only Makefile" || fail "insta
 _has_make_target "$MAKEDIR" build   && fail "build found in install-only" || ok "build absent in install-only"
 
 # ════════════════════════════════════════════════════════
+# _is_url
+# ════════════════════════════════════════════════════════
+
+section "_is_url"
+
+_is_url "https://github.com/user/repo"         && ok "https URL detected"    || fail "https URL not detected"
+_is_url "http://example.com/repo"              && ok "http URL detected"     || fail "http URL not detected"
+_is_url "git@github.com:user/repo.git"         && ok "git@ URL detected"     || fail "git@ URL not detected"
+_is_url "git://example.com/repo"               && ok "git:// URL detected"   || fail "git:// URL not detected"
+_is_url "file:///tmp/some/repo"                && ok "file:// URL detected"  || fail "file:// URL not detected"
+
+_is_url "my-package"                           && fail "plain name detected" || ok "plain name rejected"
+_is_url ""                                     && fail "empty string detected" || ok "empty string rejected"
+_is_url "usr/bin/foo"                          && fail "path detected"       || ok "path rejected"
+
+# ════════════════════════════════════════════════════════
+# _name_from_url
+# ════════════════════════════════════════════════════════
+
+section "_name_from_url"
+
+result=$(_name_from_url "https://github.com/user/repo")
+[[ "$result" == "repo" ]] && ok "https URL: repo" || fail "https URL: got ${result}"
+
+result=$(_name_from_url "https://github.com/user/repo.git")
+[[ "$result" == "repo" ]] && ok "https URL with .git: repo" || fail "https URL with .git: got ${result}"
+
+result=$(_name_from_url "http://example.com/my-pkg.git")
+[[ "$result" == "my-pkg" ]] && ok "http URL: my-pkg" || fail "http URL: got ${result}"
+
+result=$(_name_from_url "git@github.com:user/repo.git")
+[[ "$result" == "repo" ]] && ok "git@ URL: repo" || fail "git@ URL: got ${result}"
+
+result=$(_name_from_url "git://example.com/my-package")
+[[ "$result" == "my-package" ]] && ok "git:// URL: my-package" || fail "git:// URL: got ${result}"
+
+result=$(_name_from_url "https://github.com/user/deep/path/tool.git")
+[[ "$result" == "tool" ]] && ok "deep path: tool" || fail "deep path: got ${result}"
+
+result=$(_name_from_url "https://github.com/user/pkg/")
+[[ "$result" == "pkg" ]] && ok "trailing slash: pkg" || fail "trailing slash: got ${result}"
+
+result=$(_name_from_url "file:///tmp/remote/repo.git")
+[[ "$result" == "repo" ]] && ok "file:// URL: repo" || fail "file:// URL: got ${result}"
+
+result=$(_name_from_url "file:///tmp/remote/my-pkg")
+[[ "$result" == "my-pkg" ]] && ok "file:// deep: my-pkg" || fail "file:// deep: got ${result}"
+
+# ════════════════════════════════════════════════════════
 # _is_system_managed
 # ════════════════════════════════════════════════════════
 

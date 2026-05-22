@@ -242,6 +242,27 @@ _strip_escape_sequences() {
     sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b\][^\x07]*\x07//g; s/\x1b[PX^_][^\x1b]*\x1b\\//g; s/\x1b.//g'
 }
 
+# ── URL helpers ───────────────────────────────────────────
+
+_is_url() {
+    local str="$1"
+    [[ "$str" =~ ^https?:// ]] || [[ "$str" =~ ^file:// ]] || [[ "$str" =~ ^git@ ]] || [[ "$str" =~ ^git:// ]]
+}
+
+_name_from_url() {
+    local url="$1" name
+    if [[ "$url" =~ ^git@ ]]; then
+        name="${url#*:}"
+    else
+        name="${url}"
+    fi
+    name="${name%.git}"
+    name="${name%/}"
+    name="${name##*/}"
+    [[ -n "$name" ]] || die "unable to extract package name from URL: ${url}"
+    printf '%s' "$name"
+}
+
 # ── System package manager detection ──────────────────────
 
 _is_system_managed() {
