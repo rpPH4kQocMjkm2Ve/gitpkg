@@ -1,4 +1,4 @@
-.PHONY: install uninstall reinstall install-conf test test-root
+.PHONY: install uninstall reinstall install-conf man clean test test-root
 
 PREFIX     = /usr
 SYSCONFDIR = /etc
@@ -8,10 +8,25 @@ pkgname    = gitpkg
 BINDIR       = $(PREFIX)/bin
 LIBDIR       = $(PREFIX)/lib/$(pkgname)
 SHAREDIR     = $(PREFIX)/share
+MANDIR       = $(SHAREDIR)/man
 ZSH_COMPDIR  = $(SHAREDIR)/zsh/site-functions
 BASH_COMPDIR = $(SHAREDIR)/bash-completion/completions
 CONFDIR      = $(SYSCONFDIR)/$(pkgname)
 LICENSEDIR   = $(SHAREDIR)/licenses/$(pkgname)
+
+MANPAGES = man/gitpkg.8 man/gitpkg.conf.5
+
+# Generate groff from markdown (requires pandoc, run locally)
+man: $(MANPAGES)
+
+man/%.8: man/%.8.md
+	pandoc -s -t man -o $@ $<
+
+man/%.5: man/%.5.md
+	pandoc -s -t man -o $@ $<
+
+clean:
+	rm -f $(MANPAGES)
 
 install:
 	install -Dm755 gitpkg $(DESTDIR)$(BINDIR)/gitpkg
@@ -24,6 +39,9 @@ install:
 		$(DESTDIR)$(ZSH_COMPDIR)/_gitpkg
 	install -Dm644 completions/gitpkg.bash \
 		$(DESTDIR)$(BASH_COMPDIR)/gitpkg
+
+	install -Dm644 man/gitpkg.8 $(DESTDIR)$(MANDIR)/man8/gitpkg.8
+	install -Dm644 man/gitpkg.conf.5 $(DESTDIR)$(MANDIR)/man5/gitpkg.conf.5
 
 	install -Dm644 LICENSE $(DESTDIR)$(LICENSEDIR)/LICENSE
 
@@ -39,6 +57,8 @@ install:
 uninstall:
 	rm -f  $(DESTDIR)$(BINDIR)/gitpkg
 	rm -rf $(DESTDIR)$(LIBDIR)/
+	rm -f  $(DESTDIR)$(MANDIR)/man8/gitpkg.8
+	rm -f  $(DESTDIR)$(MANDIR)/man5/gitpkg.conf.5
 	rm -f  $(DESTDIR)$(ZSH_COMPDIR)/_gitpkg
 	rm -f  $(DESTDIR)$(BASH_COMPDIR)/gitpkg
 	rm -rf $(DESTDIR)$(LICENSEDIR)/

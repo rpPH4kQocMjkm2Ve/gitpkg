@@ -60,14 +60,14 @@ fi
 
 TMP=$(mktemp -d /tmp/gitpkg-inttest.XXXXXX)
 PKG="gitpkg-inttest-${$}-${RANDOM}"
-REMOTE="${TMP}/remote"
+REMOTE="${TMP}/${PKG}"
 WORK="${TMP}/work"
 
 cleanup() {
     set +e
-    rm -rf "/var/lib/gitpkg/${PKG}"
-    rm -rf "/var/cache/gitpkg/${PKG}"
-    rm -f "/usr/bin/${PKG}"
+    rm -rf "/var/lib/gitpkg/${PKG}" "/var/lib/gitpkg/${PKG2:-}"
+    rm -rf "/var/cache/gitpkg/${PKG}" "/var/cache/gitpkg/${PKG2:-}"
+    rm -f "/usr/bin/${PKG}" "/usr/bin/${PKG2:-}"
     rm -f "$LOCK_FILE"
     rm -rf "$TMP"
     if [[ $_SELF_INSTALLED -eq 1 ]]; then
@@ -281,6 +281,91 @@ fi
 
 [[ ! -f "/usr/bin/${PKG}" ]]        && ok "binary removed"  || fail "binary still exists"
 [[ ! -d "/var/lib/gitpkg/${PKG}" ]] && ok "db entry removed" || fail "db entry remains"
+
+# ══════════════════════════════════════════════════════════
+# Test 7 — install via direct URL
+# ══════════════════════════════════════════════════════════
+
+printf '\n── Test 7: install via direct URL ──────────────\n'
+
+PKG2="gitpkg-inttest2-${$}-${RANDOM}"
+REMOTE2="${TMP}/${PKG2}"
+WORK2="${TMP}/work2"
+
+git -c init.defaultBranch=main init --bare "$REMOTE2" &>/dev/null
+git clone "$REMOTE2" "$WORK2" &>/dev/null
+
+printf 'PREFIX = /usr\ninstall:\n\tinstall -Dm755 mybin2 $(DESTDIR)$(PREFIX)/bin/%s\n' \
+    "$PKG2" > "${WORK2}/Makefile"
+printf '#!/bin/sh\necho url-installed\n' > "${WORK2}/mybin2"
+chmod +x "${WORK2}/mybin2"
+GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test \
+GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
+    git -C "$WORK2" add -A &>/dev/null
+GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test \
+GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test \
+    git -C "$WORK2" commit -m "initial" &>/dev/null
+git -C "$WORK2" push origin main &>/dev/null
+
+if output=$(gitpkg install "file://${REMOTE2}" --nosig --skip-inspect --nodeps -y 2>&1); then
+    ok "URL install exited 0"
+else
+    fail "URL install failed: $(echo "$output" | tail -1)"
+fi
+
+[[ -f "/usr/bin/${PKG2}" ]] && ok "PKG2 binary deployed" || fail "PKG2 binary missing"
+out=$("/usr/bin/${PKG2}" 2>&1 || true)
+[[ "$out" == "url-installed" ]] && ok "PKG2 outputs correctly" || fail "PKG2 output: ${out}"
+
+[[ -d "/var/lib/gitpkg/${PKG2}" ]] && ok "PKG2 dbdir exists" || fail "PKG2 dbdir missing"
+
+# ══════════════════════════════════════════════════════════
+# Test 8 — re-install by URL when already installed
+# ══════════════════════════════════════════════════════════
+
+printf '\n── Test 8: reinstall by URL when already installed ─\n'
+
+output=$(gitpkg install "file://${REMOTE2}" --needed --nosig --skip-inspect --nodeps -y 2>&1)
+echo "$output" | grep -qi "up to date" \
+    && ok "reinstall with --needed reports up to date" \
+    || fail "expected 'up to date': ${output}"
+
+output=$(gitpkg install "file://${REMOTE2}" --nosig --skip-inspect --nodeps -y 2>&1)
+echo "$output" | grep -qi "reinstalling" \
+    && ok "reinstall without --needed shows warning" \
+    || fail "expected reinstall warning: ${output}"
+
+[[ -f "/usr/bin/${PKG2}" ]] && ok "PKG2 binary still exists after reinstall" || fail "PKG2 binary missing"
+out=$("/usr/bin/${PKG2}" 2>&1 || true)
+[[ "$out" == "url-installed" ]] && ok "PKG2 still outputs correctly" || fail "PKG2 output changed: ${out}"
+
+# ══════════════════════════════════════════════════════════
+# Test 9 — multi-remove
+# ══════════════════════════════════════════════════════════
+
+printf '\n── Test 9: multi-remove ─────────────────────────\n'
+
+# Re-install PKG via URL (was removed in test 6) so we have two to remove
+if output=$(gitpkg install "file://${REMOTE}" --nosig --skip-inspect --nodeps -y 2>&1); then
+    ok "PKG re-installed for multi-remove test" || true
+else
+    fail "PKG re-install failed: $(echo "$output" | tail -1)"
+fi
+
+[[ -d "/var/lib/gitpkg/${PKG}" && -d "/var/lib/gitpkg/${PKG2}" ]] \
+    && ok "both packages installed before multi-remove" \
+    || fail "not both installed"
+
+if output=$(gitpkg remove "$PKG" "$PKG2" -y --nodeps 2>&1); then
+    ok "multi-remove exited 0"
+else
+    fail "multi-remove failed: $(echo "$output" | tail -1)"
+fi
+
+[[ ! -f "/usr/bin/${PKG}" ]]  && ok "PKG binary removed"  || fail "PKG binary still exists"
+[[ ! -f "/usr/bin/${PKG2}" ]] && ok "PKG2 binary removed" || fail "PKG2 binary still exists"
+[[ ! -d "/var/lib/gitpkg/${PKG}" ]]  && ok "PKG dbdir removed"  || fail "PKG dbdir still exists"
+[[ ! -d "/var/lib/gitpkg/${PKG2}" ]] && ok "PKG2 dbdir removed" || fail "PKG2 dbdir still exists"
 
 # ══════════════════════════════════════════════════════════
 # Results
