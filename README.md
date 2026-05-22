@@ -33,13 +33,15 @@ sudo make uninstall
 ## How it works
 
 ```
-gitpkg install <name>...
+gitpkg install <name|url>...
 
-1. Constructs clone URLs from configured sources:
-   https://gitlab.com/user/<name>
-   https://github.com/user/<name>
-   ...
+Install by package name (resolved from configured sources):
+   sudo gitpkg install <name>
 
+Or install directly from any git URL:
+   sudo gitpkg install https://github.com/user/repo
+
+1. Resolves clone URL (from sources or uses the URL directly)
 2. Tries standalone repo first; if not found, searches collections
 3. Clones the first source that succeeds
 4. Verifies commit signature against trusted keys
@@ -100,6 +102,10 @@ gitpkg inspect <name> <url>
 ```
 
 **Always review the Makefile before confirming installation.**
+
+Packages installed by name are re-resolved on update (supports
+re-clone from fallback URLs). Packages installed via direct URL
+remember their source and update from the same URL.
 
 During updates, if the Makefile has changed, the diff is shown
 for review before proceeding.
@@ -199,9 +205,9 @@ Behavior:
 ## Usage
 
 ```
-gitpkg install [--needed] [--nodeps] [--nosig] [--skip-inspect] <name>...
+gitpkg install [--needed] [--nodeps] [--nosig] [--skip-inspect] <name|url>...
 gitpkg update [--nodeps] [--nosig] [--skip-inspect] [name...]
-gitpkg remove [--nodeps] <name>
+gitpkg remove [--nodeps] <name> [name...]
 gitpkg list
 gitpkg status
 gitpkg files <name>
