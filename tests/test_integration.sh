@@ -343,7 +343,7 @@ out=$("/usr/bin/${PKG2}" 2>&1 || true)
 # Test 9 — multi-remove
 # ══════════════════════════════════════════════════════════
 
-printf '\n── Test 8: multi-remove ─────────────────────────\n'
+printf '\n── Test 9: multi-remove ─────────────────────────\n'
 
 # Re-install PKG via URL (was removed in test 6) so we have two to remove
 if output=$(gitpkg install "file://${REMOTE}" --nosig --skip-inspect --nodeps -y 2>&1); then
