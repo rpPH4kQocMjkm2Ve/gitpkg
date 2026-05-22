@@ -246,7 +246,7 @@ _strip_escape_sequences() {
 
 _is_url() {
     local str="$1"
-    [[ "$str" =~ ^https?:// ]] || [[ "$str" =~ ^file:// ]] || [[ "$str" =~ ^git@ ]] || [[ "$str" =~ ^git:// ]]
+    [[ "$str" =~ ^https?:// ]] || [[ "$str" =~ ^file:// ]] || [[ "$str" =~ ^ssh:// ]] || [[ "$str" =~ ^git@ ]] || [[ "$str" =~ ^git:// ]]
 }
 
 _name_from_url() {

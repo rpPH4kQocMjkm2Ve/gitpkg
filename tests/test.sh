@@ -252,6 +252,7 @@ _is_url "https://github.com/user/repo"         && ok "https URL detected"    || 
 _is_url "http://example.com/repo"              && ok "http URL detected"     || fail "http URL not detected"
 _is_url "git@github.com:user/repo.git"         && ok "git@ URL detected"     || fail "git@ URL not detected"
 _is_url "git://example.com/repo"               && ok "git:// URL detected"   || fail "git:// URL not detected"
+_is_url "ssh://git@github.com/user/repo"       && ok "ssh:// URL detected"   || fail "ssh:// URL not detected"
 _is_url "file:///tmp/some/repo"                && ok "file:// URL detected"  || fail "file:// URL not detected"
 
 _is_url "my-package"                           && fail "plain name detected" || ok "plain name rejected"
@@ -290,6 +291,12 @@ result=$(_name_from_url "file:///tmp/remote/repo.git")
 
 result=$(_name_from_url "file:///tmp/remote/my-pkg")
 [[ "$result" == "my-pkg" ]] && ok "file:// deep: my-pkg" || fail "file:// deep: got ${result}"
+
+result=$(_name_from_url "ssh://git@github.com/user/tool.git")
+[[ "$result" == "tool" ]] && ok "ssh:// URL: tool" || fail "ssh:// URL: got ${result}"
+
+result=$(_name_from_url "ssh://git@github.com/user/org/sub/tool")
+[[ "$result" == "tool" ]] && ok "ssh:// nested: tool" || fail "ssh:// nested: got ${result}"
 
 # ════════════════════════════════════════════════════════
 # _is_system_managed

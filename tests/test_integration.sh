@@ -320,7 +320,27 @@ out=$("/usr/bin/${PKG2}" 2>&1 || true)
 [[ -d "/var/lib/gitpkg/${PKG2}" ]] && ok "PKG2 dbdir exists" || fail "PKG2 dbdir missing"
 
 # ══════════════════════════════════════════════════════════
-# Test 8 — multi-remove
+# Test 8 — re-install by URL when already installed
+# ══════════════════════════════════════════════════════════
+
+printf '\n── Test 8: reinstall by URL when already installed ─\n'
+
+output=$(gitpkg install "file://${REMOTE2}" --needed --nosig --skip-inspect --nodeps -y 2>&1)
+echo "$output" | grep -qi "up to date" \
+    && ok "reinstall with --needed reports up to date" \
+    || fail "expected 'up to date': ${output}"
+
+output=$(gitpkg install "file://${REMOTE2}" --nosig --skip-inspect --nodeps -y 2>&1)
+echo "$output" | grep -qi "reinstalling" \
+    && ok "reinstall without --needed shows warning" \
+    || fail "expected reinstall warning: ${output}"
+
+[[ -f "/usr/bin/${PKG2}" ]] && ok "PKG2 binary still exists after reinstall" || fail "PKG2 binary missing"
+out=$("/usr/bin/${PKG2}" 2>&1 || true)
+[[ "$out" == "url-installed" ]] && ok "PKG2 still outputs correctly" || fail "PKG2 output changed: ${out}"
+
+# ══════════════════════════════════════════════════════════
+# Test 9 — multi-remove
 # ══════════════════════════════════════════════════════════
 
 printf '\n── Test 8: multi-remove ─────────────────────────\n'

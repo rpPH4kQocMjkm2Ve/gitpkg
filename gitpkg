@@ -663,13 +663,17 @@ cmd_remove() {
     [[ ${#names[@]} -gt 0 ]] || die "usage: gitpkg remove <name> [name...]"
     [[ $EUID -eq 0 ]] || die "must run as root"
 
-    local name
+    local name errors=0
     for name in "${names[@]}"; do
-        [[ -d "${DBDIR}/${name}" ]] || die "${name} is not installed"
-        if _is_system_managed "$name"; then
-            die "${name} is managed by the system package manager. Use your system package manager to remove it."
+        if [[ ! -d "${DBDIR}/${name}" ]]; then
+            printf 'ERROR: %s is not installed\n' "$name" >&2
+            errors=1
+        elif _is_system_managed "$name"; then
+            printf 'ERROR: %s is managed by the system package manager. Use your system package manager to remove it.\n' "$name" >&2
+            errors=1
         fi
     done
+    [[ $errors -eq 0 ]] || die "one or more packages failed validation"
 
     acquire_lock
 
